@@ -1,0 +1,84 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+type VerifyDeviceRequest struct {
+	CodeOrSecret string `json:"code_or_secret"`
+	DeviceName   string `json:"device_name"`
+	Platform     string `json:"platform"`
+	PushToken    string `json:"push_token,omitempty"`
+}
+
+func (s *Server) handlePairInit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	userID := ""
+	if err == nil && user != nil {
+		userID = user.ID
+	}
+
+	res, err := s.pairing.InitPairing(r.Context(), userID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to initialize pairing")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handlePairVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req VerifyDeviceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	pairing, err := s.pairing.VerifyPairing(r.Context(), req.CodeOrSecret, req.DeviceName, req.Platform, req.PushToken)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Issue session token for the mobile device if pairing had user
+	var sessionToken string
+	if pairing.UserID != "" {
+		_, rawToken, err := s.sessions.IssueSession(r.Context(), w, r, pairing.UserID)
+		if err == nil {
+			sessionToken = rawToken
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"paired":        true,
+		"session_token": sessionToken,
+		"device_name":   pairing.DeviceName,
+	})
+}
+
+func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
+	secret := r.URL.Query().Get("secret")
+	if secret == "" {
+		s.writeError(w, http.StatusBadRequest, "secret query parameter required")
+		return
+	}
+
+	pairing, err := s.pairing.PollPairingStatus(r.Context(), secret)
+	if err != nil {
+		s.writeError(w, http.StatusNotFound, "Pairing not found or expired")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, pairing)
+}

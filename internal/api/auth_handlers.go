@@ -1,0 +1,223 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
+	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
+	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+)
+
+type LoginRequest struct {
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	CaptchaToken string `json:"captcha_token,omitempty"`
+}
+
+type MFARequest struct {
+	UserID string `json:"user_id"`
+	Code   string `json:"code"`
+}
+
+func (s *Server) handlePoWChallenge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	challenge, err := auth.GeneratePoWChallenge(s.config.Captcha.DifficultyPoW)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to generate PoW challenge")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, challenge)
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	req.Username = strings.TrimSpace(req.Username)
+	if req.Username == "" || req.Password == "" {
+		s.writeError(w, http.StatusBadRequest, "Username and password are required")
+		return
+	}
+
+	// Verify PoW CAPTCHA if enabled
+	if s.config.Captcha.Provider == "pow" {
+		if req.CaptchaToken == "" || !auth.VerifyPoWSolution(req.CaptchaToken) {
+			s.writeError(w, http.StatusForbidden, "Security check failed. Please complete the CAPTCHA puzzle.")
+			return
+		}
+	}
+
+	user, err := s.store.Users().GetUserByUsername(r.Context(), req.Username)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "Authentication error")
+		return
+	}
+
+	if user.Status != "active" {
+		s.writeError(w, http.StatusForbidden, "Account is disabled or inactive")
+		return
+	}
+
+	if !crypto.VerifyPassword(req.Password, user.PasswordHash) {
+		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+
+	// Check if MFA is required
+	if user.TOTPEnabled {
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"mfa_required": true,
+			"user_id":      user.ID,
+			"methods":      []string{"totp", "recovery_code"},
+		})
+		return
+	}
+
+	// Issue active session
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+		return
+	}
+
+	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+		UserID:   user.ID,
+		Action:   "auth.login",
+		Resource: "session",
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req MFARequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	user, err := s.store.Users().GetUserByID(r.Context(), req.UserID)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "User not found")
+		return
+	}
+
+	secretBytes, err := crypto.DecryptAESGCM(user.TOTPSecretEnc, s.config.Security.EncryptionKey)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to decrypt MFA secret")
+		return
+	}
+
+	if !auth.ValidateTOTP(string(secretBytes), req.Code) {
+		s.writeError(w, http.StatusUnauthorized, "Invalid TOTP verification code")
+		return
+	}
+
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+		return
+	}
+
+	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+		UserID:   user.ID,
+		Action:   "auth.mfa_totp",
+		Resource: "session",
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req MFARequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	user, err := s.store.Users().GetUserByID(r.Context(), req.UserID)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "User not found")
+		return
+	}
+
+	updatedHashes, ok := auth.RedeemRecoveryCode(req.Code, user.RecoveryCodesHash)
+	if !ok {
+		s.writeError(w, http.StatusUnauthorized, "Invalid or already used recovery code")
+		return
+	}
+
+	user.RecoveryCodesHash = updatedHashes
+	_ = s.store.Users().UpdateUser(r.Context(), user)
+
+	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
+		return
+	}
+
+	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+		UserID:   user.ID,
+		Action:   "auth.mfa_recovery_code",
+		Resource: "session",
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          user,
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	_ = s.sessions.RevokeSession(r.Context(), w, r)
+	s.writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"user":          user,
+	})
+}
