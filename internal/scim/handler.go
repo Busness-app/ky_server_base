@@ -75,14 +75,14 @@ func (s *Server) handleServiceProviderConfig(w http.ResponseWriter, r *http.Requ
 	}
 
 	cfg := map[string]any{
-		"schemas": []string{SchemaServiceProviderConfig},
+		"schemas":          []string{SchemaServiceProviderConfig},
 		"documentationUri": "https://busnes.app/docs/scim",
-		"patch": map[string]bool{"supported": true},
-		"bulk":  map[string]any{"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
-		"filter": map[string]any{"supported": true, "maxResults": 200},
-		"changePassword": map[string]bool{"supported": false},
-		"sort": map[string]bool{"supported": false},
-		"etag": map[string]bool{"supported": false},
+		"patch":            map[string]bool{"supported": true},
+		"bulk":             map[string]any{"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
+		"filter":           map[string]any{"supported": true, "maxResults": 200},
+		"changePassword":   map[string]bool{"supported": false},
+		"sort":             map[string]bool{"supported": false},
+		"etag":             map[string]bool{"supported": false},
 		"authenticationSchemes": []map[string]any{
 			{
 				"name":        "OAuth Bearer Token",

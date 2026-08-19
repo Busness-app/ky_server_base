@@ -7,9 +7,9 @@ import (
 
 var (
 	ErrNotFound       = errors.New("record not found")
-	ErrAlreadyExists   = errors.New("record already exists")
-	ErrSessionExpired  = errors.New("session expired")
-	ErrPairingExpired  = errors.New("pairing session expired")
+	ErrAlreadyExists  = errors.New("record already exists")
+	ErrSessionExpired = errors.New("session expired")
+	ErrPairingExpired = errors.New("pairing session expired")
 )
 
 // Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.

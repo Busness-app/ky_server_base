@@ -40,17 +40,17 @@ type SCIMMeta struct {
 
 // SCIMUser represents an RFC 7643 User Resource.
 type SCIMUser struct {
-	Schemas    []string          `json:"schemas"`
-	ID         string            `json:"id"`
-	ExternalID string            `json:"externalId,omitempty"`
-	UserName   string            `json:"userName"`
-	Name       *SCIMName         `json:"name,omitempty"`
-	DisplayName string           `json:"displayName,omitempty"`
-	Active     bool              `json:"active"`
-	Emails     []SCIMMultiValued `json:"emails,omitempty"`
-	Roles      []SCIMMultiValued `json:"roles,omitempty"`
-	Groups     []SCIMMultiValued `json:"groups,omitempty"`
-	Meta       SCIMMeta          `json:"meta"`
+	Schemas     []string          `json:"schemas"`
+	ID          string            `json:"id"`
+	ExternalID  string            `json:"externalId,omitempty"`
+	UserName    string            `json:"userName"`
+	Name        *SCIMName         `json:"name,omitempty"`
+	DisplayName string            `json:"displayName,omitempty"`
+	Active      bool              `json:"active"`
+	Emails      []SCIMMultiValued `json:"emails,omitempty"`
+	Roles       []SCIMMultiValued `json:"roles,omitempty"`
+	Groups      []SCIMMultiValued `json:"groups,omitempty"`
+	Meta        SCIMMeta          `json:"meta"`
 }
 
 // SCIMGroup represents an RFC 7643 Group Resource.
