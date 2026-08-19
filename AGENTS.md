@@ -79,6 +79,18 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+## Verification
+
+CI (`.github/workflows/ci.yml`) runs on every push and pull request:
+- `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`
+- `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 17
+- Frontend typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary)
+- `govulncheck` and `npm audit --audit-level=high`
+- `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
+- Docker image build and container HTTP check
+
+Run the same checks locally with `make ci`; add `make test-postgres` when a Postgres instance is available.
+
 ## Child DOX Index
 
 - [internal/config/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/config/AGENTS.md): Configuration management and environment loader.
@@ -89,6 +101,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - [internal/scim/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
 - [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Feature 0 KyBackup capsules, restore drills, and Shamir secret splitting.
 - [internal/devices/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
+- [internal/testdb/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](file:///home/yoshi/git/ky_server_base/web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
