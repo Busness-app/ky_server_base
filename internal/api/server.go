@@ -74,14 +74,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/devices/pair/verify", s.handlePairVerify)
 	s.mux.HandleFunc("/api/devices/pair/poll", s.handlePairPoll)
 
-	// Feature 0 KyBackup & Restore Drills
-	s.mux.HandleFunc("/api/backup/drill", s.handleBackupDrill)
-	s.mux.HandleFunc("/api/backup/export-kit", s.handleExportRecoveryKit)
-	s.mux.HandleFunc("/api/backup/pair-remote", s.handlePairRemoteRecovery)
+	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
+	s.mux.HandleFunc("/api/backup/drill", s.requireAdmin(s.handleBackupDrill))
+	s.mux.HandleFunc("/api/backup/export-kit", s.requireAdmin(s.handleExportRecoveryKit))
+	s.mux.HandleFunc("/api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
 
-	// Settings & Theme
+	// Settings & Theme. The read endpoint tiers its own payload by role.
 	s.mux.HandleFunc("/api/settings", s.handleGetSettings)
-	s.mux.HandleFunc("/api/settings/theme", s.handleSetTheme)
+	s.mux.HandleFunc("/api/settings/theme", s.requireAdmin(s.handleSetTheme))
 
 	// SCIM 2.0 routes
 	s.scim.RegisterRoutes(s.mux)
@@ -90,8 +90,28 @@ func (s *Server) routes() {
 	s.mux.Handle("/", web.Handler())
 }
 
+// requireAdmin rejects requests without a valid session, or with a non-admin one.
+func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, _, err := s.sessions.AuthenticateRequest(r)
+		if err != nil {
+			s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			return
+		}
+		if user.Role != "admin" {
+			s.writeError(w, http.StatusForbidden, "Administrator role required")
+			return
+		}
+		h(w, r)
+	}
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS for local Vite dev / wrappers
+	// Enable CORS for local Vite dev / wrappers.
+	// FIXME(security): wildcard origin. Browsers block credentialed cross-origin
+	// requests under "*", so sessions are not reachable this way, but any site can
+	// read every unauthenticated response. Replace with an allowlist built from
+	// KY_APP_URL plus an opt-in dev origin.
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-KySignOn-Signature")

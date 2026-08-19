@@ -10,27 +10,40 @@ type ThemeUpdateRequest struct {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	settings, err := s.store.Settings().GetAllSettings(r.Context())
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to load settings")
-		return
-	}
-
 	theme, _ := s.store.Settings().GetSetting(r.Context(), "site_theme")
 	if theme == "" {
 		theme = "patina"
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"app_name":       s.config.Server.AppName,
-		"app_url":        s.config.Server.AppURL,
-		"sso_enabled":    s.config.SSO.Enabled,
-		"scim_enabled":   s.config.SCIM.Enabled,
-		"theme":          theme,
-		"db_driver":      s.config.Database.Driver,
+	// Public tier: what the login screen needs before a session exists.
+	out := map[string]any{
+		"app_name":         s.config.Server.AppName,
+		"app_url":          s.config.Server.AppURL,
+		"theme":            theme,
 		"captcha_provider": s.config.Captcha.Provider,
-		"extra_settings": settings,
-	})
+		"sso_enabled":      s.config.SSO.Enabled,
+	}
+
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	out["scim_enabled"] = s.config.SCIM.Enabled
+	out["db_driver"] = s.config.Database.Driver
+
+	// extra_settings holds secrets such as the SCIM bearer and recovery tokens.
+	if user.Role == "admin" {
+		settings, err := s.store.Settings().GetAllSettings(r.Context())
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "Failed to load settings")
+			return
+		}
+		out["extra_settings"] = settings
+	}
+
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleSetTheme(w http.ResponseWriter, r *http.Request) {
