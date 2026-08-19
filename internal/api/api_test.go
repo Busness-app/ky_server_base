@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/api"
@@ -14,15 +13,13 @@ import (
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 )
 
 func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
 	t.Helper()
-	tmpDir := t.TempDir()
-
 	cfg, _ := config.LoadFromEnv()
-	cfg.Database.Driver = "sqlite"
-	cfg.Database.DSN = filepath.Join(tmpDir, "test.db")
+	cfg.Database = testdb.Config(t)
 	cfg.Captcha.Provider = "none" // disable captcha for unit test speed
 
 	st, err := store.Open(context.Background(), cfg.Database)
@@ -116,6 +113,7 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 
 	// 5. /api/backup/drill
 	drillReq := httptest.NewRequest("POST", "/api/backup/drill", nil)
+	drillReq.AddCookie(sessionCookie)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, drillReq)
 	if w.Code != http.StatusOK {

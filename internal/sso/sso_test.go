@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"path/filepath"
 	"testing"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
 	"github.com/Yoshiofthewire/ky_server_base/internal/sso"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 )
 
 func TestParseJWTClaims(t *testing.T) {
@@ -36,11 +36,7 @@ func TestParseJWTClaims(t *testing.T) {
 }
 
 func TestKySignOnWebhookSync(t *testing.T) {
-	tmpDir := t.TempDir()
-	st, err := store.Open(context.Background(), config.DatabaseConfig{
-		Driver: "sqlite",
-		DSN:    filepath.Join(tmpDir, "test.db"),
-	})
+	st, err := store.Open(context.Background(), testdb.Config(t))
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}

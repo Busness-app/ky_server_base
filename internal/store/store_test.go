@@ -2,26 +2,17 @@ package store_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 	"github.com/google/uuid"
 )
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	cfg := config.DatabaseConfig{
-		Driver: "sqlite",
-		DSN:    dbPath,
-	}
-
-	st, err := store.Open(context.Background(), cfg)
+	st, err := store.Open(context.Background(), testdb.Config(t))
 	if err != nil {
 		t.Fatalf("failed to open test store: %v", err)
 	}

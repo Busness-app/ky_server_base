@@ -6,21 +6,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/scim"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 )
 
 func setupSCIMServer(t *testing.T) (*scim.Server, *http.ServeMux, string) {
 	t.Helper()
-	tmpDir := t.TempDir()
-	st, err := store.Open(context.Background(), config.DatabaseConfig{
-		Driver: "sqlite",
-		DSN:    filepath.Join(tmpDir, "test.db"),
-	})
+	st, err := store.Open(context.Background(), testdb.Config(t))
 	if err != nil {
 		t.Fatalf("failed to open test store: %v", err)
 	}
