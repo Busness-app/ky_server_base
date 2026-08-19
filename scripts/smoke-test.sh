@@ -14,8 +14,10 @@ SERVER_PID=""
 FAILURES=0
 
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-  [ -n "$SERVER_PID" ] && wait "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null || :
+    wait "$SERVER_PID" 2>/dev/null || :
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT

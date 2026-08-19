@@ -1,6 +1,6 @@
 module github.com/Yoshiofthewire/ky_server_base
 
-go 1.26
+go 1.26.6
 
 require (
 	github.com/google/uuid v1.6.0
