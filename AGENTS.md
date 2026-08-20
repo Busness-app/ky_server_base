@@ -105,3 +105,4 @@ Run the same checks locally with `make ci`; add `make test-postgres` when a Post
 - [internal/api/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](file:///home/yoshi/git/ky_server_base/web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
+- `zero_code_pairing_handoff_spec.md`: contract for pairing a service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. Implement the client half here so every server built on this base inherits it instead of re-implementing per product.
