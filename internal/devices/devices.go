@@ -66,12 +66,12 @@ func (s *PairingService) InitPairing(ctx context.Context, userID string) (*InitP
 	}
 
 	qrData := map[string]any{
-		"action":    "ky_pair",
-		"app_name":  s.appName,
-		"app_url":   s.appURL,
-		"code":      code,
-		"secret":    secret,
-		"expires":   expiresAt.Unix(),
+		"action":   "ky_pair",
+		"app_name": s.appName,
+		"app_url":  s.appURL,
+		"code":     code,
+		"secret":   secret,
+		"expires":  expiresAt.Unix(),
 	}
 	qrBytes, _ := json.Marshal(qrData)
 

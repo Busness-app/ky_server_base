@@ -10,9 +10,9 @@ import (
 
 // Migration represents an incremental schema change step.
 type Migration struct {
-	Version int
-	Name    string
-	SQLite  string
+	Version  int
+	Name     string
+	SQLite   string
 	Postgres string
 }
 

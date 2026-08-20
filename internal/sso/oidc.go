@@ -22,9 +22,9 @@ type GenericOIDCClient struct {
 	store  store.Store
 	client *http.Client
 
-	mu          sync.RWMutex
+	mu           sync.RWMutex
 	discoveryDoc *OIDCDiscovery
-	lastFetch   time.Time
+	lastFetch    time.Time
 }
 
 type OIDCDiscovery struct {

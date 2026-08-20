@@ -88,12 +88,12 @@ type PushBackupFile struct {
 }
 
 type PushResponse struct {
-	Status      string                 `json:"status"`
-	CapsuleID   string                 `json:"capsule_id"`
-	ServiceName string                 `json:"service_name"`
-	SizeBytes   int64                  `json:"size_bytes"`
-	PayloadHash string                 `json:"payload_hash"`
-	DrillSummary DrillResult            `json:"drill_summary"`
+	Status       string      `json:"status"`
+	CapsuleID    string      `json:"capsule_id"`
+	ServiceName  string      `json:"service_name"`
+	SizeBytes    int64       `json:"size_bytes"`
+	PayloadHash  string      `json:"payload_hash"`
+	DrillSummary DrillResult `json:"drill_summary"`
 }
 
 // PushBackup pushes a self-declaring backup payload to the remote KyRecovery instance.
@@ -183,10 +183,10 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 		},
 		VerificationRecipe: map[string]interface{}{
 			"check_sqlite_integrity": len(sqlitePaths) > 0,
-			"sqlite_paths":          sqlitePaths,
-			"required_files":        reqFiles,
-			"expected_env":          []string{"KY_PORT", "KY_DB_DRIVER"},
-			"expected_ports":        []int{cfg.Server.Port},
+			"sqlite_paths":           sqlitePaths,
+			"required_files":         reqFiles,
+			"expected_env":           []string{"KY_PORT", "KY_DB_DRIVER"},
+			"expected_ports":         []int{cfg.Server.Port},
 		},
 	}
 

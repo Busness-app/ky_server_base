@@ -2,21 +2,16 @@ package devices_test
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/devices"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 )
 
 func TestPairingLifecycle(t *testing.T) {
 	ctx := context.Background()
-	tmpDir := t.TempDir()
-	st, err := store.Open(ctx, config.DatabaseConfig{
-		Driver: "sqlite",
-		DSN:    filepath.Join(tmpDir, "test.db"),
-	})
+	st, err := store.Open(ctx, testdb.Config(t))
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}

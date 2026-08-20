@@ -10,9 +10,9 @@ type User struct {
 	Username           string     `json:"username"`
 	Email              string     `json:"email"`
 	DisplayName        string     `json:"display_name"`
-	PasswordHash       string     `json:"-"` // Never serialized to JSON
-	Role               string     `json:"role"` // "admin", "user", "manager"
-	Status             string     `json:"status"` // "active", "suspended", "inactive"
+	PasswordHash       string     `json:"-"`            // Never serialized to JSON
+	Role               string     `json:"role"`         // "admin", "user", "manager"
+	Status             string     `json:"status"`       // "active", "suspended", "inactive"
 	SSOProvider        string     `json:"sso_provider"` // "local", "kysignon", "oidc", "saml", "scim"
 	SSOSubject         string     `json:"sso_subject,omitempty"`
 	TOTPSecretEnc      string     `json:"-"` // AES-256-GCM encrypted
@@ -37,7 +37,7 @@ type Session struct {
 
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.
 type DevicePairing struct {
-	Code       string    `json:"code"` // 6-digit verification code
+	Code       string    `json:"code"`   // 6-digit verification code
 	Secret     string    `json:"secret"` // Ephemeral secret for exchange
 	UserID     string    `json:"user_id,omitempty"`
 	DeviceName string    `json:"device_name,omitempty"`

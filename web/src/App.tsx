@@ -45,6 +45,18 @@ export const App: React.FC = () => {
     checkAuth();
   }, []);
 
+  // /api/settings returns more fields once authenticated, so re-read it after login.
+  const loadSettings = async () => {
+    const resp = await fetch('/api/settings');
+    if (resp.ok) {
+      const s = await resp.json();
+      setSettings(s);
+      if (s.theme) {
+        document.documentElement.setAttribute('data-theme', s.theme);
+      }
+    }
+  };
+
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
@@ -59,7 +71,15 @@ export const App: React.FC = () => {
   }
 
   if (!user) {
-    return <Login appName={settings?.app_name || 'Busnes.app'} onSuccess={(u) => setUser(u)} />;
+    return (
+      <Login
+        appName={settings?.app_name || 'Busnes.app'}
+        onSuccess={(u) => {
+          setUser(u);
+          void loadSettings();
+        }}
+      />
+    );
   }
 
   return (
