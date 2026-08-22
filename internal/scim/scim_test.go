@@ -59,7 +59,11 @@ func TestSCIMUserLifecycle(t *testing.T) {
 		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var created scim.SCIMUser
+	var created struct {
+		ID       string `json:"id"`
+		UserName string `json:"userName"`
+		Active   bool   `json:"active"`
+	}
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	if created.UserName != "scim_alice" || !created.Active {
 		t.Errorf("unexpected created SCIM user: %+v", created)
@@ -75,17 +79,19 @@ func TestSCIMUserLifecycle(t *testing.T) {
 		t.Fatalf("expected 200 OK, got %d", w.Code)
 	}
 
-	var listResp scim.ListResponse
+	var listResp struct {
+		TotalResults int `json:"totalResults"`
+	}
 	_ = json.Unmarshal(w.Body.Bytes(), &listResp)
 	if listResp.TotalResults != 1 {
 		t.Errorf("expected 1 user result, got %d", listResp.TotalResults)
 	}
 
 	// 3. Patch SCIM User (Deactivate)
-	patchPayload := scim.PatchRequest{
-		Schemas: []string{scim.SchemaPatchOp},
-		Operations: []scim.PatchOperation{
-			{Op: "replace", Path: "active", Value: false},
+	patchPayload := map[string]any{
+		"schemas": []string{scim.SchemaPatchOp},
+		"Operations": []map[string]any{
+			{"op": "replace", "path": "active", "value": false},
 		},
 	}
 	patchBody, _ := json.Marshal(patchPayload)
@@ -98,7 +104,9 @@ func TestSCIMUserLifecycle(t *testing.T) {
 		t.Fatalf("expected 200 OK after patch, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var patched scim.SCIMUser
+	var patched struct {
+		Active bool `json:"active"`
+	}
 	_ = json.Unmarshal(w.Body.Bytes(), &patched)
 	if patched.Active {
 		t.Errorf("expected user to be deactivated after patch")

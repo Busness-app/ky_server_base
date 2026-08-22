@@ -7,19 +7,16 @@ import (
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"golang.org/x/oauth2"
 )
 
 func (s *Server) handleKySignOnLogin(w http.ResponseWriter, r *http.Request) {
 	state := crypto.RandomHex(16)
 	nonce := crypto.RandomHex(16)
-	verifier, challenge, err := crypto.GeneratePKCE()
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to generate PKCE")
-		return
-	}
+	verifier := oauth2.GenerateVerifier()
 
 	redirectURI := fmt.Sprintf("%s/api/sso/kysignon/callback", s.config.Server.AppURL)
-	authURL, err := s.kysignon.BuildAuthURL(redirectURI, state, challenge, nonce)
+	authURL, err := s.kysignon.BuildAuthURL(r.Context(), redirectURI, state, verifier, nonce)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return

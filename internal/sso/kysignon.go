@@ -5,10 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
@@ -20,84 +16,25 @@ import (
 type KySignOnClient struct {
 	config config.SSOConfig
 	store  store.Store
-	client *http.Client
+	flow   *oauthFlow
 }
 
 func NewKySignOnClient(cfg config.SSOConfig, st store.Store) *KySignOnClient {
 	return &KySignOnClient{
 		config: cfg,
 		store:  st,
-		client: &http.Client{Timeout: 10 * time.Second},
+		flow:   newOAuthFlow(cfg.KySignOnIssuer, cfg.KySignOnClientID, cfg.KySignOnSecret),
 	}
 }
 
 // BuildAuthURL generates the authorization code URL with PKCE for KySignOn.
-func (k *KySignOnClient) BuildAuthURL(redirectURI, state, challenge, nonce string) (string, error) {
-	if k.config.KySignOnIssuer == "" || k.config.KySignOnClientID == "" {
-		return "", ErrProviderDisabled
-	}
-
-	issuer := strings.TrimRight(k.config.KySignOnIssuer, "/")
-	authEndpoint := fmt.Sprintf("%s/oauth/authorize", issuer)
-
-	v := url.Values{}
-	v.Set("client_id", k.config.KySignOnClientID)
-	v.Set("redirect_uri", redirectURI)
-	v.Set("response_type", "code")
-	v.Set("scope", "openid profile email")
-	v.Set("state", state)
-	v.Set("code_challenge", challenge)
-	v.Set("code_challenge_method", "S256")
-	v.Set("nonce", nonce)
-
-	return fmt.Sprintf("%s?%s", authEndpoint, v.Encode()), nil
+func (k *KySignOnClient) BuildAuthURL(ctx context.Context, redirectURI, state, verifier, nonce string) (string, error) {
+	return k.flow.authCodeURL(ctx, redirectURI, state, verifier, nonce)
 }
 
 // ExchangeCode exchanges the authorization code and verifier for identity claims.
 func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redirectURI, expectedNonce string) (*IdentityClaims, error) {
-	issuer := strings.TrimRight(k.config.KySignOnIssuer, "/")
-	tokenEndpoint := fmt.Sprintf("%s/oauth/token", issuer)
-
-	data := url.Values{}
-	data.Set("grant_type", "authorization_code")
-	data.Set("code", code)
-	data.Set("code_verifier", verifier)
-	data.Set("redirect_uri", redirectURI)
-	data.Set("client_id", k.config.KySignOnClientID)
-	if k.config.KySignOnSecret != "" {
-		data.Set("client_secret", k.config.KySignOnSecret)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", tokenEndpoint, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := k.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token exchange failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token endpoint returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var tokenResp struct {
-		IDToken     string `json:"id_token"`
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, err
-	}
-
-	if tokenResp.IDToken == "" {
-		return nil, errors.New("no id_token in token response")
-	}
-
-	claims, err := verifyIDToken(ctx, issuer, k.config.KySignOnClientID, tokenResp.IDToken, expectedNonce)
+	claims, err := k.flow.exchange(ctx, code, verifier, redirectURI, expectedNonce)
 	if err != nil {
 		return nil, err
 	}

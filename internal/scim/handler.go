@@ -1,608 +1,371 @@
 package scim
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"strconv"
+	"regexp"
 	"strings"
-	"time"
+
+	protocol "github.com/elimity-com/scim"
+	protocolErrors "github.com/elimity-com/scim/errors"
+	"github.com/elimity-com/scim/optional"
+	"github.com/elimity-com/scim/schema"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
 )
 
-// Server handles all RFC 7643 and RFC 7644 SCIM 2.0 endpoints.
 type Server struct {
-	store  store.Store
-	config config.SCIMConfig
-	appURL string
+	config   config.SCIMConfig
+	protocol http.Handler
 }
 
 func NewServer(st store.Store, cfg config.SCIMConfig, appURL string) *Server {
-	return &Server{
-		store:  st,
-		config: cfg,
-		appURL: strings.TrimRight(appURL, "/"),
+	userHandler := &userResourceHandler{store: st}
+	groupHandler := &groupResourceHandler{store: st}
+	server, err := protocol.NewServer(&protocol.ServerArgs{
+		ServiceProviderConfig: &protocol.ServiceProviderConfig{
+			DocumentationURI: optional.NewString("https://busnes.app/docs/scim"),
+			SupportPatch:     true, SupportFiltering: true, MaxResults: 200,
+			AuthenticationSchemes: []protocol.AuthenticationScheme{{Type: protocol.AuthenticationTypeOauthBearerToken, Name: "OAuth Bearer Token", Description: "RFC 6750 bearer token", SpecURI: optional.NewString("https://www.rfc-editor.org/rfc/rfc6750"), Primary: true}},
+		},
+		ResourceTypes: []protocol.ResourceType{
+			{ID: optional.NewString("User"), Name: "User", Endpoint: "/Users", Description: optional.NewString("User Account"), Schema: schema.CoreUserSchema(), Handler: userHandler},
+			{ID: optional.NewString("Group"), Name: "Group", Endpoint: "/Groups", Description: optional.NewString("Group Resource"), Schema: schema.CoreGroupSchema(), Handler: groupHandler},
+		},
+	}, protocol.WithBaseURL(strings.TrimRight(appURL, "/")+"/scim/v2"))
+	if err != nil {
+		return &Server{config: cfg, protocol: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "SCIM initialization failed", http.StatusInternalServerError)
+		})}
 	}
+	return &Server{config: cfg, protocol: server}
 }
 
-// RegisterRoutes attaches standard /scim/v2 routes to an http.ServeMux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/scim/v2/ServiceProviderConfig", s.handleServiceProviderConfig)
-	mux.HandleFunc("/scim/v2/Schemas", s.handleSchemas)
-	mux.HandleFunc("/scim/v2/ResourceTypes", s.handleResourceTypes)
-
-	mux.HandleFunc("/scim/v2/Users", s.handleUsers)
-	mux.HandleFunc("/scim/v2/Users/", s.handleUserByID)
-
-	mux.HandleFunc("/scim/v2/Groups", s.handleGroups)
-	mux.HandleFunc("/scim/v2/Groups/", s.handleGroupByID)
+	h := http.StripPrefix("/scim", s.protocol)
+	mux.Handle("/scim/v2", h)
+	mux.Handle("/scim/v2/", h)
 }
 
-// AuthMiddleware enforces bearer token verification for SCIM requests.
 func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/scim/v2") {
 			next.ServeHTTP(w, r)
 			return
 		}
-
 		if !s.config.Enabled {
-			s.writeError(w, http.StatusForbidden, "SCIM provisioning is disabled", "")
+			writeAuthError(w, http.StatusForbidden, "SCIM provisioning is disabled")
 			return
 		}
-
-		authHeader := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-
-		if token == "" || token != s.config.BearerToken {
+		parts := strings.Fields(r.Header.Get("Authorization"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || !constantTimeEqual(parts[1], s.config.BearerToken) {
 			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
-			s.writeError(w, http.StatusUnauthorized, "Invalid or missing bearer token", "")
+			writeAuthError(w, http.StatusUnauthorized, "Invalid or missing bearer token")
 			return
 		}
-
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (s *Server) handleServiceProviderConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed", "")
-		return
-	}
-
-	cfg := map[string]any{
-		"schemas":          []string{SchemaServiceProviderConfig},
-		"documentationUri": "https://busnes.app/docs/scim",
-		"patch":            map[string]bool{"supported": true},
-		"bulk":             map[string]any{"supported": false, "maxOperations": 0, "maxPayloadSize": 0},
-		"filter":           map[string]any{"supported": true, "maxResults": 200},
-		"changePassword":   map[string]bool{"supported": false},
-		"sort":             map[string]bool{"supported": false},
-		"etag":             map[string]bool{"supported": false},
-		"authenticationSchemes": []map[string]any{
-			{
-				"name":        "OAuth Bearer Token",
-				"description": "Authentication scheme using the OAuth Bearer Token Standard",
-				"specUri":     "http://www.rfc-editor.org/info/rfc6750",
-				"type":        "oauthbearertoken",
-				"primary":     true,
-			},
-		},
-		"meta": SCIMMeta{
-			ResourceType: "ServiceProviderConfig",
-			Created:      time.Now().UTC(),
-			LastModified: time.Now().UTC(),
-			Location:     fmt.Sprintf("%s/scim/v2/ServiceProviderConfig", s.appURL),
-		},
-	}
-
-	s.writeJSON(w, http.StatusOK, cfg)
+func constantTimeEqual(a, b string) bool {
+	return len(a) == len(b) && subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
-func (s *Server) handleSchemas(w http.ResponseWriter, r *http.Request) {
-	resp := ListResponse{
-		Schemas:      []string{SchemaListResponse},
-		TotalResults: 2,
-		StartIndex:   1,
-		ItemsPerPage: 2,
-		Resources: []any{
-			map[string]any{"id": SchemaUser, "name": "User", "description": "User Account"},
-			map[string]any{"id": SchemaGroup, "name": "Group", "description": "Group Resource"},
-		},
-	}
-	s.writeJSON(w, http.StatusOK, resp)
+func writeAuthError(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/scim+json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(protocolErrors.ScimError{Status: status, Detail: detail})
 }
 
-func (s *Server) handleResourceTypes(w http.ResponseWriter, r *http.Request) {
-	resp := ListResponse{
-		Schemas:      []string{SchemaListResponse},
-		TotalResults: 2,
-		StartIndex:   1,
-		ItemsPerPage: 2,
-		Resources: []any{
-			map[string]any{
-				"schemas":          []string{SchemaResourceType},
-				"id":               "User",
-				"name":             "User",
-				"endpoint":         "/Users",
-				"schema":           SchemaUser,
-				"schemaExtensions": []any{},
-			},
-			map[string]any{
-				"schemas":          []string{SchemaResourceType},
-				"id":               "Group",
-				"name":             "Group",
-				"endpoint":         "/Groups",
-				"schema":           SchemaGroup,
-				"schemaExtensions": []any{},
-			},
-		},
+type userResourceHandler struct{ store store.Store }
+
+func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	username, _ := attrs["userName"].(string)
+	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", "")}
+	if user.Role == "" {
+		user.Role = "user"
 	}
-	s.writeJSON(w, http.StatusOK, resp)
+	if err := h.store.Users().CreateUser(r.Context(), user); err != nil {
+		return protocol.Resource{}, scimStoreError(err, user.ID)
+	}
+	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username})
+	return userResource(user), nil
 }
 
-// ---------------------------------------------------------------------
-// Users Collection & Operations
-// ---------------------------------------------------------------------
-
-func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listUsers(w, r)
-	case http.MethodPost:
-		s.createUser(w, r)
-	default:
-		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed", "")
+func (h *userResourceHandler) Get(r *http.Request, id string) (protocol.Resource, error) {
+	user, err := h.store.Users().GetUserByID(r.Context(), id)
+	if err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
+	return userResource(user), nil
 }
 
-func (s *Server) handleUserByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/scim/v2/Users/")
-	if id == "" {
-		s.handleUsers(w, r)
-		return
-	}
+var equalityFilter = regexp.MustCompile(`(?i)(?:userName|email|displayName)\s+eq\s+"([^"]+)"`)
 
-	switch r.Method {
-	case http.MethodGet:
-		s.getUser(w, r, id)
-	case http.MethodPut:
-		s.replaceUser(w, r, id)
-	case http.MethodPatch:
-		s.patchUser(w, r, id)
-	case http.MethodDelete:
-		s.deleteUser(w, r, id)
-	default:
-		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed", "")
-	}
-}
-
-func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
-	startIndex := getQueryInt(r, "startIndex", 1)
-	count := getQueryInt(r, "count", 50)
-	filter := r.URL.Query().Get("filter")
-
-	offset := startIndex - 1
-	if offset < 0 {
-		offset = 0
-	}
-
+func (h *userResourceHandler) GetAll(r *http.Request, params protocol.ListRequestParams) (protocol.Page, error) {
 	search := ""
-	if filter != "" {
-		// Basic filter parsing: userName eq "value" or email eq "value"
-		if strings.Contains(filter, "eq") {
-			parts := strings.Split(filter, "eq")
-			if len(parts) == 2 {
-				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-				search = val
-			}
-		} else {
-			search = filter
+	if raw := r.URL.Query().Get("filter"); raw != "" {
+		match := equalityFilter.FindStringSubmatch(raw)
+		if len(match) != 2 {
+			return protocol.Page{}, protocolErrors.ScimErrorInvalidFilter
 		}
+		search = match[1]
 	}
-
-	users, total, err := s.store.Users().ListUsers(r.Context(), offset, count, search)
+	users, total, err := h.store.Users().ListUsers(r.Context(), params.StartIndex-1, params.Count, search)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
+		return protocol.Page{}, err
 	}
-
-	var resources []any
-	for _, u := range users {
-		resources = append(resources, s.userToSCIM(u))
+	resources := make([]protocol.Resource, 0, len(users))
+	for _, user := range users {
+		resources = append(resources, userResource(user))
 	}
-
-	resp := ListResponse{
-		Schemas:      []string{SchemaListResponse},
-		TotalResults: total,
-		StartIndex:   startIndex,
-		ItemsPerPage: len(resources),
-		Resources:    resources,
-	}
-
-	s.writeJSON(w, http.StatusOK, resp)
+	return protocol.Page{TotalResults: total, Resources: resources}, nil
 }
 
-func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
-	var input SCIMUser
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid JSON body", "invalidSyntax")
-		return
+func (h *userResourceHandler) Replace(r *http.Request, id string, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	user, err := h.store.Users().GetUserByID(r.Context(), id)
+	if err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
+	oldRole, oldStatus := user.Role, user.Status
+	user.Username, _ = attrs["userName"].(string)
+	user.Email = primaryValue(attrs["emails"])
+	user.DisplayName = stringValue(attrs, "displayName", user.Username)
+	if role := primaryValue(attrs["roles"]); role != "" {
+		user.Role = role
+	}
+	user.Status = statusFromActive(attrs)
+	if err := h.store.Users().UpdateUser(r.Context(), user); err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
+	}
+	h.revokeIfPrivilegesChanged(r, user, oldRole, oldStatus)
+	return userResource(user), nil
+}
 
-	if input.UserName == "" {
-		s.writeError(w, http.StatusBadRequest, "userName is required", "invalidValue")
-		return
-	}
+func (h *userResourceHandler) Delete(r *http.Request, id string) error {
+	return scimStoreError(h.store.Users().DeleteUser(r.Context(), id), id)
+}
 
-	email := ""
-	if len(input.Emails) > 0 {
-		email = input.Emails[0].Value
+func (h *userResourceHandler) Patch(r *http.Request, id string, operations []protocol.PatchOperation) (protocol.Resource, error) {
+	user, err := h.store.Users().GetUserByID(r.Context(), id)
+	if err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
-
-	displayName := input.DisplayName
-	if displayName == "" && input.Name != nil {
-		displayName = input.Name.Formatted
-	}
-	if displayName == "" {
-		displayName = input.UserName
-	}
-
-	role := "user"
-	if len(input.Roles) > 0 && input.Roles[0].Value != "" {
-		role = input.Roles[0].Value
-	}
-
-	status := "active"
-	if !input.Active {
-		status = "inactive"
-	}
-
-	userID := fmt.Sprintf("usr_%s", crypto.RandomHex(12))
-	user := &store.User{
-		ID:          userID,
-		Username:    input.UserName,
-		Email:       email,
-		DisplayName: displayName,
-		Role:        role,
-		Status:      status,
-		SSOProvider: "scim",
-		SSOSubject:  input.ExternalID,
-	}
-
-	if err := s.store.Users().CreateUser(r.Context(), user); err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
-			s.writeError(w, http.StatusConflict, "User already exists", "uniqueness")
-			return
+	oldRole, oldStatus := user.Role, user.Status
+	for _, op := range operations {
+		if op.Op == protocol.PatchOperationRemove {
+			continue
 		}
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-
-	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
-		UserID:   user.ID,
-		Action:   "scim.user.create",
-		Resource: user.Username,
-	})
-
-	w.Header().Set("Location", fmt.Sprintf("%s/scim/v2/Users/%s", s.appURL, user.ID))
-	s.writeJSON(w, http.StatusCreated, s.userToSCIM(user))
-}
-
-func (s *Server) getUser(w http.ResponseWriter, r *http.Request, id string) {
-	user, err := s.store.Users().GetUserByID(r.Context(), id)
-	if err != nil {
-		s.writeError(w, http.StatusNotFound, "User not found", "")
-		return
-	}
-	s.writeJSON(w, http.StatusOK, s.userToSCIM(user))
-}
-
-func (s *Server) replaceUser(w http.ResponseWriter, r *http.Request, id string) {
-	existing, err := s.store.Users().GetUserByID(r.Context(), id)
-	if err != nil {
-		s.writeError(w, http.StatusNotFound, "User not found", "")
-		return
-	}
-
-	var input SCIMUser
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid JSON", "invalidSyntax")
-		return
-	}
-
-	if input.UserName != "" {
-		existing.Username = input.UserName
-	}
-	if len(input.Emails) > 0 {
-		existing.Email = input.Emails[0].Value
-	}
-	if input.DisplayName != "" {
-		existing.DisplayName = input.DisplayName
-	}
-	if len(input.Roles) > 0 {
-		existing.Role = input.Roles[0].Value
-	}
-	if input.Active {
-		existing.Status = "active"
-	} else {
-		existing.Status = "inactive"
-	}
-
-	if err := s.store.Users().UpdateUser(r.Context(), existing); err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-
-	s.writeJSON(w, http.StatusOK, s.userToSCIM(existing))
-}
-
-func (s *Server) patchUser(w http.ResponseWriter, r *http.Request, id string) {
-	user, err := s.store.Users().GetUserByID(r.Context(), id)
-	if err != nil {
-		s.writeError(w, http.StatusNotFound, "User not found", "")
-		return
-	}
-
-	var patch PatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid patch JSON", "invalidSyntax")
-		return
-	}
-
-	for _, op := range patch.Operations {
-		path := strings.ToLower(op.Path)
-		switch path {
-		case "active":
-			if b, ok := op.Value.(bool); ok {
-				if b {
-					user.Status = "active"
-				} else {
-					user.Status = "inactive"
-				}
+		if op.Path == nil {
+			if values, ok := op.Value.(map[string]interface{}); ok {
+				applyUserValues(user, values)
 			}
-		case "displayname":
-			if str, ok := op.Value.(string); ok {
-				user.DisplayName = str
-			}
-		case "role", "roles":
-			if str, ok := op.Value.(string); ok {
-				user.Role = str
+			continue
+		}
+		applyUserValue(user, strings.ToLower(op.Path.String()), op.Value)
+	}
+	if err := h.store.Users().UpdateUser(r.Context(), user); err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
+	}
+	h.revokeIfPrivilegesChanged(r, user, oldRole, oldStatus)
+	return userResource(user), nil
+}
+
+func (h *userResourceHandler) revokeIfPrivilegesChanged(r *http.Request, user *store.User, oldRole, oldStatus string) {
+	if user.Role != oldRole || user.Status != oldStatus {
+		_ = h.store.Sessions().DeleteUserSessions(r.Context(), user.ID)
+	}
+}
+
+func applyUserValues(user *store.User, values map[string]interface{}) {
+	for key, value := range values {
+		applyUserValue(user, strings.ToLower(key), value)
+	}
+}
+func applyUserValue(user *store.User, path string, value interface{}) {
+	switch path {
+	case "active":
+		if active, ok := value.(bool); ok {
+			if active {
+				user.Status = "active"
+			} else {
+				user.Status = "inactive"
 			}
 		}
-	}
-
-	if err := s.store.Users().UpdateUser(r.Context(), user); err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-
-	s.writeJSON(w, http.StatusOK, s.userToSCIM(user))
-}
-
-func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.store.Users().DeleteUser(r.Context(), id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			s.writeError(w, http.StatusNotFound, "User not found", "")
-			return
+	case "displayname":
+		if v, ok := value.(string); ok {
+			user.DisplayName = v
 		}
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// ---------------------------------------------------------------------
-// Groups Collection & Operations
-// ---------------------------------------------------------------------
-
-func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listGroups(w, r)
-	case http.MethodPost:
-		s.createGroup(w, r)
-	default:
-		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed", "")
+	case "username":
+		if v, ok := value.(string); ok {
+			user.Username = v
+		}
+	case "roles", "role":
+		if v := primaryValue(value); v != "" {
+			user.Role = v
+		}
+	case "emails":
+		user.Email = primaryValue(value)
 	}
 }
 
-func (s *Server) handleGroupByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/scim/v2/Groups/")
-	if id == "" {
-		s.handleGroups(w, r)
-		return
+func userResource(user *store.User) protocol.Resource {
+	attrs := protocol.ResourceAttributes{"userName": user.Username, "displayName": user.DisplayName, "active": user.Status == "active"}
+	if user.Email != "" {
+		attrs["emails"] = []interface{}{map[string]interface{}{"value": user.Email, "type": "work", "primary": true}}
 	}
-
-	switch r.Method {
-	case http.MethodGet:
-		s.getGroup(w, r, id)
-	case http.MethodDelete:
-		s.deleteGroup(w, r, id)
-	default:
-		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed", "")
+	if user.Role != "" {
+		attrs["roles"] = []interface{}{map[string]interface{}{"value": user.Role, "primary": true}}
 	}
+	return protocol.Resource{ID: user.ID, ExternalID: optional.NewString(user.SSOSubject), Attributes: attrs, Meta: protocol.Meta{Created: &user.CreatedAt, LastModified: &user.UpdatedAt}}
 }
 
-func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
-	startIndex := getQueryInt(r, "startIndex", 1)
-	count := getQueryInt(r, "count", 50)
-	offset := startIndex - 1
-	if offset < 0 {
-		offset = 0
-	}
+type groupResourceHandler struct{ store store.Store }
 
-	groups, total, err := s.store.Groups().ListGroups(r.Context(), offset, count)
+func (h *groupResourceHandler) Create(r *http.Request, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	group := &store.Group{ID: "grp_" + crypto.RandomHex(12), DisplayName: stringValue(attrs, "displayName", ""), ExternalID: stringValue(attrs, "externalId", "")}
+	if err := h.store.Groups().CreateGroup(r.Context(), group); err != nil {
+		return protocol.Resource{}, scimStoreError(err, group.ID)
+	}
+	if err := h.replaceMembers(r, group.ID, nil, memberValues(attrs["members"])); err != nil {
+		return protocol.Resource{}, err
+	}
+	group.Members = memberValues(attrs["members"])
+	return groupResource(group), nil
+}
+func (h *groupResourceHandler) Get(r *http.Request, id string) (protocol.Resource, error) {
+	group, err := h.store.Groups().GetGroupByID(r.Context(), id)
 	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
-
-	var resources []any
-	for _, g := range groups {
-		resources = append(resources, s.groupToSCIM(g))
-	}
-
-	resp := ListResponse{
-		Schemas:      []string{SchemaListResponse},
-		TotalResults: total,
-		StartIndex:   startIndex,
-		ItemsPerPage: len(resources),
-		Resources:    resources,
-	}
-
-	s.writeJSON(w, http.StatusOK, resp)
+	return groupResource(group), nil
 }
-
-func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
-	var input SCIMGroup
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		s.writeError(w, http.StatusBadRequest, "Invalid JSON", "invalidSyntax")
-		return
-	}
-
-	if input.DisplayName == "" {
-		s.writeError(w, http.StatusBadRequest, "displayName is required", "invalidValue")
-		return
-	}
-
-	grpID := fmt.Sprintf("grp_%s", crypto.RandomHex(12))
-	grp := &store.Group{
-		ID:          grpID,
-		DisplayName: input.DisplayName,
-		ExternalID:  input.ExternalID,
-	}
-
-	if err := s.store.Groups().CreateGroup(r.Context(), grp); err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
-			s.writeError(w, http.StatusConflict, "Group already exists", "uniqueness")
-			return
-		}
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
-	}
-
-	for _, m := range input.Members {
-		if m.Value != "" {
-			_ = s.store.Groups().AddGroupMember(r.Context(), grp.ID, m.Value)
-		}
-	}
-
-	w.Header().Set("Location", fmt.Sprintf("%s/scim/v2/Groups/%s", s.appURL, grp.ID))
-	s.writeJSON(w, http.StatusCreated, s.groupToSCIM(grp))
-}
-
-func (s *Server) getGroup(w http.ResponseWriter, r *http.Request, id string) {
-	grp, err := s.store.Groups().GetGroupByID(r.Context(), id)
+func (h *groupResourceHandler) GetAll(r *http.Request, params protocol.ListRequestParams) (protocol.Page, error) {
+	groups, total, err := h.store.Groups().ListGroups(r.Context(), params.StartIndex-1, params.Count)
 	if err != nil {
-		s.writeError(w, http.StatusNotFound, "Group not found", "")
-		return
+		return protocol.Page{}, err
 	}
-	s.writeJSON(w, http.StatusOK, s.groupToSCIM(grp))
+	resources := make([]protocol.Resource, 0, len(groups))
+	for _, group := range groups {
+		resources = append(resources, groupResource(group))
+	}
+	return protocol.Page{TotalResults: total, Resources: resources}, nil
 }
-
-func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request, id string) {
-	if err := s.store.Groups().DeleteGroup(r.Context(), id); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			s.writeError(w, http.StatusNotFound, "Group not found", "")
-			return
-		}
-		s.writeError(w, http.StatusInternalServerError, err.Error(), "")
-		return
+func (h *groupResourceHandler) Replace(r *http.Request, id string, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	group, err := h.store.Groups().GetGroupByID(r.Context(), id)
+	if err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	old := group.Members
+	group.DisplayName = stringValue(attrs, "displayName", group.DisplayName)
+	group.ExternalID = stringValue(attrs, "externalId", group.ExternalID)
+	group.Members = memberValues(attrs["members"])
+	if err := h.store.Groups().UpdateGroup(r.Context(), group); err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
+	}
+	if err := h.replaceMembers(r, id, old, group.Members); err != nil {
+		return protocol.Resource{}, err
+	}
+	return groupResource(group), nil
 }
-
-// ---------------------------------------------------------------------
-// Mappers & Helpers
-// ---------------------------------------------------------------------
-
-func (s *Server) userToSCIM(u *store.User) SCIMUser {
-	var emails []SCIMMultiValued
-	if u.Email != "" {
-		emails = append(emails, SCIMMultiValued{
-			Value:   u.Email,
-			Primary: true,
-			Type:    "work",
-		})
-	}
-
-	var roles []SCIMMultiValued
-	if u.Role != "" {
-		roles = append(roles, SCIMMultiValued{
-			Value:   u.Role,
-			Primary: true,
-		})
-	}
-
-	return SCIMUser{
-		Schemas:     []string{SchemaUser},
-		ID:          u.ID,
-		ExternalID:  u.SSOSubject,
-		UserName:    u.Username,
-		DisplayName: u.DisplayName,
-		Active:      u.Status == "active",
-		Emails:      emails,
-		Roles:       roles,
-		Meta: SCIMMeta{
-			ResourceType: "User",
-			Created:      u.CreatedAt,
-			LastModified: u.UpdatedAt,
-			Location:     fmt.Sprintf("%s/scim/v2/Users/%s", s.appURL, u.ID),
-		},
-	}
+func (h *groupResourceHandler) Delete(r *http.Request, id string) error {
+	return scimStoreError(h.store.Groups().DeleteGroup(r.Context(), id), id)
 }
-
-func (s *Server) groupToSCIM(g *store.Group) SCIMGroup {
-	var members []SCIMMultiValued
-	for _, m := range g.Members {
-		members = append(members, SCIMMultiValued{
-			Value: m,
-		})
+func (h *groupResourceHandler) Patch(r *http.Request, id string, operations []protocol.PatchOperation) (protocol.Resource, error) {
+	group, err := h.store.Groups().GetGroupByID(r.Context(), id)
+	if err != nil {
+		return protocol.Resource{}, scimStoreError(err, id)
 	}
-
-	return SCIMGroup{
-		Schemas:     []string{SchemaGroup},
-		ID:          g.ID,
-		ExternalID:  g.ExternalID,
-		DisplayName: g.DisplayName,
-		Members:     members,
-		Meta: SCIMMeta{
-			ResourceType: "Group",
-			Created:      g.CreatedAt,
-			LastModified: g.UpdatedAt,
-			Location:     fmt.Sprintf("%s/scim/v2/Groups/%s", s.appURL, g.ID),
-		},
-	}
-}
-
-func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/scim+json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(data)
-}
-
-func (s *Server) writeError(w http.ResponseWriter, status int, detail, scimType string) {
-	w.Header().Set("Content-Type", "application/scim+json")
-	w.WriteHeader(status)
-	resp := ErrorResponse{
-		Schemas:  []string{SchemaError},
-		Status:   strconv.Itoa(status),
-		ScimType: scimType,
-		Detail:   detail,
-	}
-	_ = json.NewEncoder(w).Encode(resp)
-}
-
-func getQueryInt(r *http.Request, key string, defaultVal int) int {
-	if val := r.URL.Query().Get(key); val != "" {
-		if intVal, err := strconv.Atoi(val); err == nil && intVal > 0 {
-			return intVal
+	attrs := protocol.ResourceAttributes{"displayName": group.DisplayName, "members": memberMaps(group.Members)}
+	for _, op := range operations {
+		if op.Path != nil {
+			attrs[op.Path.String()] = op.Value
 		}
 	}
-	return defaultVal
+	return h.Replace(r, id, attrs)
+}
+func (h *groupResourceHandler) replaceMembers(r *http.Request, groupID string, old, next []string) error {
+	for _, id := range old {
+		if err := h.store.Groups().RemoveGroupMember(r.Context(), groupID, id); err != nil {
+			return err
+		}
+	}
+	for _, id := range next {
+		if err := h.store.Groups().AddGroupMember(r.Context(), groupID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func groupResource(group *store.Group) protocol.Resource {
+	return protocol.Resource{ID: group.ID, ExternalID: optional.NewString(group.ExternalID), Attributes: protocol.ResourceAttributes{"displayName": group.DisplayName, "members": memberMaps(group.Members)}, Meta: protocol.Meta{Created: &group.CreatedAt, LastModified: &group.UpdatedAt}}
+}
+func memberMaps(ids []string) []interface{} {
+	out := make([]interface{}, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, map[string]interface{}{"value": id})
+	}
+	return out
+}
+func memberValues(value interface{}) []string {
+	var out []string
+	for _, item := range interfaceSlice(value) {
+		if m, ok := item.(map[string]interface{}); ok {
+			if v, ok := m["value"].(string); ok && v != "" {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+func primaryValue(value interface{}) string {
+	for _, item := range interfaceSlice(value) {
+		if m, ok := item.(map[string]interface{}); ok {
+			if v, ok := m["value"].(string); ok {
+				return v
+			}
+		}
+		if v, ok := item.(string); ok {
+			return v
+		}
+	}
+	if v, ok := value.(string); ok {
+		return v
+	}
+	return ""
+}
+func interfaceSlice(value interface{}) []interface{} {
+	if values, ok := value.([]interface{}); ok {
+		return values
+	}
+	return nil
+}
+func stringValue(attrs protocol.ResourceAttributes, key, fallback string) string {
+	if value, ok := attrs[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+func statusFromActive(attrs protocol.ResourceAttributes) string {
+	if active, ok := attrs["active"].(bool); ok && !active {
+		return "inactive"
+	}
+	return "active"
+}
+func scimStoreError(err error, id string) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return protocolErrors.ScimErrorResourceNotFound(id)
+	}
+	if errors.Is(err, store.ErrAlreadyExists) {
+		return protocolErrors.ScimErrorUniqueness
+	}
+	return err
 }
