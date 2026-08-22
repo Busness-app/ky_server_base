@@ -62,8 +62,11 @@ func runServer() {
 			adminPass = crypto.RandomHex(12)
 			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
-		hash, _ := crypto.HashPassword(adminPass)
-		_ = st.Users().CreateUser(ctx, &store.User{
+		hash, err := crypto.HashPassword(adminPass)
+		if err != nil {
+			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
+		}
+		if err := st.Users().CreateUser(ctx, &store.User{
 			ID:           fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
 			Username:     "admin",
 			DisplayName:  "Administrator",
@@ -71,7 +74,9 @@ func runServer() {
 			Role:         "admin",
 			Status:       "active",
 			SSOProvider:  "local",
-		})
+		}); err != nil {
+			log.Fatalf("Failed to create bootstrap admin: %v", err)
+		}
 	}
 
 	srv := api.NewServer(cfg, st)
@@ -218,6 +223,8 @@ func runExportRecoveryKit(args []string) {
 
 	html := backup.GenerateRecoveryKitHTML(capsule, cfg.Server.AppName, cfg.Server.AppURL)
 	outPath := "recovery_kit.html"
-	_ = os.WriteFile(outPath, []byte(html), 0600)
+	if err := os.WriteFile(outPath, []byte(html), 0600); err != nil {
+		log.Fatalf("Failed to write recovery kit: %v", err)
+	}
 	log.Printf("✓ Emergency Disaster Recovery Kit written to %s", outPath)
 }

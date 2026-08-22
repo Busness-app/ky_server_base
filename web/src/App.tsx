@@ -6,6 +6,7 @@ import { Backup } from './pages/Backup';
 import { SCIMAdmin } from './pages/SCIMAdmin';
 import { Settings } from './pages/Settings';
 import './styles/theme.css';
+import { secureFetch } from './api';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -58,7 +59,7 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    await secureFetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
   };
 

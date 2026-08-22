@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -22,15 +24,57 @@ type KyRecoveryClient struct {
 }
 
 func NewKyRecoveryClient() *KyRecoveryClient {
-	return &KyRecoveryClient{
-		client: &http.Client{Timeout: 30 * time.Second},
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		for _, ip := range ips {
+			if isPublicIP(ip) {
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			}
+		}
+		return nil, errors.New("recovery host resolves only to private or reserved addresses")
+	}}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return errors.New("too many redirects")
+		}
+		return validateRecoveryURL(req.URL)
 	}
+	return &KyRecoveryClient{
+		client: client,
+	}
+}
+
+func validateRecoveryURL(u *url.URL) error {
+	if u == nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return errors.New("recovery URL must be an HTTPS URL without credentials")
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && !isPublicIP(ip) {
+		return errors.New("recovery URL cannot target a private or reserved address")
+	}
+	return nil
+}
+
+func isPublicIP(ip net.IP) bool {
+	return ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 // ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent API bearer token.
 func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (string, error) {
 	serverURL = strings.TrimRight(serverURL, "/")
 	endpoint := fmt.Sprintf("%s/api/pairing/claim", serverURL)
+	parsedEndpoint, err := url.Parse(endpoint)
+	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
+		return "", errors.New("invalid recovery URL")
+	}
 
 	reqBody := map[string]string{
 		"pairing_code": strings.TrimSpace(pairingCode),
@@ -51,7 +95,7 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return "", fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
 	}
 
@@ -59,7 +103,7 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 		APIToken string `json:"api_token"`
 		Status   string `json:"status"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&claimResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&claimResp); err != nil {
 		return "", err
 	}
 
@@ -100,6 +144,10 @@ type PushResponse struct {
 func (c *KyRecoveryClient) PushBackup(ctx context.Context, serverURL, apiToken string, payload PushBackupPayload) (*PushResponse, error) {
 	serverURL = strings.TrimRight(serverURL, "/")
 	endpoint := fmt.Sprintf("%s/api/backup/push", serverURL)
+	parsedEndpoint, err := url.Parse(endpoint)
+	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
+		return nil, errors.New("invalid recovery URL")
+	}
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -120,12 +168,12 @@ func (c *KyRecoveryClient) PushBackup(ctx context.Context, serverURL, apiToken s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return nil, fmt.Errorf("backup push rejected (%d): %s", resp.StatusCode, string(b))
 	}
 
 	var pushResp PushResponse
-	if err := json.NewDecoder(resp.Body).Decode(&pushResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pushResp); err != nil {
 		return nil, err
 	}
 

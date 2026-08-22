@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Palette } from 'lucide-react';
+import { secureFetch } from '../api';
 
 const THEMES = [
   { id: 'patina', label: 'Patina Ky (Default)' },
@@ -23,7 +24,7 @@ export const ThemeSwitcher: React.FC = () => {
     localStorage.setItem('ky_theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
     // Optionally persist to backend
-    fetch('/api/settings/theme', {
+    secureFetch('/api/settings/theme', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ theme }),

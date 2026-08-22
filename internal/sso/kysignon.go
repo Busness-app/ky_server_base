@@ -32,7 +32,7 @@ func NewKySignOnClient(cfg config.SSOConfig, st store.Store) *KySignOnClient {
 }
 
 // BuildAuthURL generates the authorization code URL with PKCE for KySignOn.
-func (k *KySignOnClient) BuildAuthURL(redirectURI, state, challenge string) (string, error) {
+func (k *KySignOnClient) BuildAuthURL(redirectURI, state, challenge, nonce string) (string, error) {
 	if k.config.KySignOnIssuer == "" || k.config.KySignOnClientID == "" {
 		return "", ErrProviderDisabled
 	}
@@ -48,12 +48,13 @@ func (k *KySignOnClient) BuildAuthURL(redirectURI, state, challenge string) (str
 	v.Set("state", state)
 	v.Set("code_challenge", challenge)
 	v.Set("code_challenge_method", "S256")
+	v.Set("nonce", nonce)
 
 	return fmt.Sprintf("%s?%s", authEndpoint, v.Encode()), nil
 }
 
 // ExchangeCode exchanges the authorization code and verifier for identity claims.
-func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*IdentityClaims, error) {
+func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redirectURI, expectedNonce string) (*IdentityClaims, error) {
 	issuer := strings.TrimRight(k.config.KySignOnIssuer, "/")
 	tokenEndpoint := fmt.Sprintf("%s/oauth/token", issuer)
 
@@ -96,7 +97,7 @@ func (k *KySignOnClient) ExchangeCode(ctx context.Context, code, verifier, redir
 		return nil, errors.New("no id_token in token response")
 	}
 
-	claims, err := ParseJWTClaims(tokenResp.IDToken)
+	claims, err := verifyIDToken(ctx, issuer, k.config.KySignOnClientID, tokenResp.IDToken, expectedNonce)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +131,9 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return fmt.Errorf("invalid json payload: %w", err)
 	}
+	if payload.Timestamp == 0 || time.Since(time.Unix(payload.Timestamp, 0)).Abs() > 5*time.Minute {
+		return errors.New("webhook timestamp is missing or expired")
+	}
 
 	switch payload.Event {
 	case "user.created", "user.updated":
@@ -148,12 +152,19 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 		}
 
 		if existing != nil {
+			privilegesChanged := existing.Role != role || existing.Status != status
 			existing.Username = payload.Username
 			existing.Email = payload.Email
 			existing.DisplayName = payload.DisplayName
 			existing.Role = role
 			existing.Status = status
-			return k.store.Users().UpdateUser(ctx, existing)
+			if err := k.store.Users().UpdateUser(ctx, existing); err != nil {
+				return err
+			}
+			if privilegesChanged {
+				return k.store.Sessions().DeleteUserSessions(ctx, existing.ID)
+			}
+			return nil
 		}
 
 		newUser := &store.User{
@@ -174,7 +185,10 @@ func (k *KySignOnClient) HandleSyncWebhook(ctx context.Context, body []byte, sig
 			return nil // User might not exist locally
 		}
 		existing.Status = "inactive"
-		return k.store.Users().UpdateUser(ctx, existing)
+		if err := k.store.Users().UpdateUser(ctx, existing); err != nil {
+			return err
+		}
+		return k.store.Sessions().DeleteUserSessions(ctx, existing.ID)
 
 	case "user.deleted":
 		existing, err := k.store.Users().GetUserBySSO(ctx, "kysignon", payload.ID)

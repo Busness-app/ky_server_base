@@ -9,6 +9,8 @@ Owns OIDC PKCE authorization flows, ID token claims extraction, KySignOn HMAC-SH
 ## Local Contracts
 - `KySignOnClient.HandleSyncWebhook` verifies HMAC-SHA256 signatures before modifying local user state.
 - PKCE with `S256` is enforced on all OAuth/OIDC authorization requests.
+- ID tokens require provider signature, issuer, audience, expiry, and one-time nonce verification before claims are trusted.
+- Directory webhook timestamps are accepted only within five minutes; status or role changes revoke the user's sessions.
 
 ## Verification
 - `go test -v ./internal/sso/...`

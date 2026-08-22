@@ -233,6 +233,22 @@ WHERE id = ?
 	return nil
 }
 
+func (u *userStore) UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error {
+	q := u.store.rebind("UPDATE users SET recovery_codes_hash = ?, updated_at = ? WHERE id = ? AND recovery_codes_hash = ?")
+	res, err := u.store.db.ExecContext(ctx, q, newHashes, time.Now().UTC(), userID, oldHashes)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrAlreadyExists
+	}
+	return nil
+}
+
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
 	q := u.store.rebind("DELETE FROM users WHERE id = ?")
 	res, err := u.store.db.ExecContext(ctx, q, id)
@@ -374,6 +390,45 @@ func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
 	return err
 }
 
+func (s *sessionStore) CreateMFAChallenge(ctx context.Context, challenge *MFAChallenge) error {
+	q := s.store.rebind("INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES (?, ?, ?)")
+	_, err := s.store.db.ExecContext(ctx, q, challenge.TokenHash, challenge.UserID, challenge.ExpiresAt)
+	return err
+}
+
+func (s *sessionStore) ConsumeMFAChallenge(ctx context.Context, tokenHash string) (string, error) {
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	q := s.store.rebind("SELECT user_id, expires_at FROM mfa_challenges WHERE token_hash = ?")
+	var userID string
+	var expiresAt time.Time
+	if err := tx.QueryRowContext(ctx, q, tokenHash).Scan(&userID, &expiresAt); err != nil {
+		if errorsIs(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	if !time.Now().UTC().Before(expiresAt) {
+		return "", ErrSessionExpired
+	}
+	deleteQ := s.store.rebind("DELETE FROM mfa_challenges WHERE token_hash = ?")
+	res, err := tx.ExecContext(ctx, deleteQ, tokenHash)
+	if err != nil {
+		return "", err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil || rows != 1 {
+		return "", ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
 // ---------------------------------------------------------------------
 // Device Pairing Store
 // ---------------------------------------------------------------------
@@ -436,11 +491,12 @@ func (d *deviceStore) scanPairing(row interface{ Scan(...any) error }) (*DeviceP
 	return &p, nil
 }
 
-func (d *deviceStore) UpdatePairingStatus(ctx context.Context, secret, status, userID, pushToken string) error {
+func (d *deviceStore) ConsumePairing(ctx context.Context, secret, deviceName, platform, pushToken string) error {
 	q := d.store.rebind(`
-UPDATE device_pairings SET status = ?, user_id = ?, push_token = ? WHERE secret = ?
+UPDATE device_pairings SET status = 'consumed', device_name = ?, platform = ?, push_token = ?
+WHERE secret = ? AND status = 'pending' AND expires_at > ?
 `)
-	res, err := d.store.db.ExecContext(ctx, q, status, userID, pushToken, secret)
+	res, err := d.store.db.ExecContext(ctx, q, deviceName, platform, pushToken, secret, time.Now().UTC())
 	if err != nil {
 		return err
 	}

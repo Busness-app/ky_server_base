@@ -8,11 +8,15 @@ interface LoginProps {
   appName: string;
 }
 
+interface MFAChallenge {
+  mfa_token: string;
+}
+
 export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
-  const [mfaChallenge, setMfaChallenge] = useState<any>(null);
+  const [mfaChallenge, setMfaChallenge] = useState<MFAChallenge | null>(null);
   const [mfaCode, setMfaCode] = useState<string>('');
   const [isRecoveryCode, setIsRecoveryCode] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
@@ -56,6 +60,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
 
   const handleMFASubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!mfaChallenge) return;
     setError('');
     setLoading(true);
 
@@ -65,7 +70,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: mfaChallenge.user_id,
+          mfa_token: mfaChallenge.mfa_token,
           code: mfaCode.trim(),
         }),
       });

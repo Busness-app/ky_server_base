@@ -10,6 +10,8 @@ interface Challenge {
   salt: string;
   challenge: string;
   maxnumber: number;
+  expires_at: number;
+  signature: string;
 }
 
 export const CaptchaWidget: React.FC<CaptchaProps> = ({ onToken }) => {
@@ -44,6 +46,9 @@ export const CaptchaWidget: React.FC<CaptchaProps> = ({ onToken }) => {
               salt: chal.salt,
               challenge: chal.challenge,
               number: i,
+              maxnumber: chal.maxnumber,
+              expires_at: chal.expires_at,
+              signature: chal.signature,
             };
             const token = btoa(JSON.stringify(sol));
             setStatus('done');

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
@@ -18,8 +19,8 @@ type LoginRequest struct {
 }
 
 type MFARequest struct {
-	UserID string `json:"user_id"`
-	Code   string `json:"code"`
+	MFAToken string `json:"mfa_token"`
+	Code     string `json:"code"`
 }
 
 func (s *Server) handlePoWChallenge(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +29,7 @@ func (s *Server) handlePoWChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	challenge, err := auth.GeneratePoWChallenge(s.config.Captcha.DifficultyPoW)
+	challenge, err := auth.GeneratePoWChallenge(s.config.Captcha.DifficultyPoW, s.config.Security.SessionSecret)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to generate PoW challenge")
 		return
@@ -40,6 +41,10 @@ func (s *Server) handlePoWChallenge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if !s.allowAttempt("login:"+requestIP(r), 20, time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many login attempts")
 		return
 	}
 
@@ -57,7 +62,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Verify PoW CAPTCHA if enabled
 	if s.config.Captcha.Provider == "pow" {
-		if req.CaptchaToken == "" || !auth.VerifyPoWSolution(req.CaptchaToken) {
+		if req.CaptchaToken == "" || !auth.VerifyPoWSolution(req.CaptchaToken, s.config.Security.SessionSecret) {
 			s.writeError(w, http.StatusForbidden, "Security check failed. Please complete the CAPTCHA puzzle.")
 			return
 		}
@@ -85,9 +90,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Check if MFA is required
 	if user.TOTPEnabled {
+		rawChallenge := crypto.RandomHex(32)
+		if err := s.store.Sessions().CreateMFAChallenge(r.Context(), &store.MFAChallenge{
+			TokenHash: crypto.SHA256Hex([]byte(rawChallenge)),
+			UserID:    user.ID,
+			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		}); err != nil {
+			s.writeError(w, http.StatusInternalServerError, "Failed to start MFA verification")
+			return
+		}
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"mfa_required": true,
-			"user_id":      user.ID,
+			"mfa_token":    rawChallenge,
 			"methods":      []string{"totp", "recovery_code"},
 		})
 		return
@@ -123,10 +137,23 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
+		return
+	}
 
-	user, err := s.store.Users().GetUserByID(r.Context(), req.UserID)
+	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
+		return
+	}
+	user, err := s.store.Users().GetUserByID(r.Context(), userID)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
+		return
+	}
+	if user.Status != "active" || !user.TOTPEnabled {
+		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
 
@@ -170,10 +197,23 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
+	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
+		return
+	}
 
-	user, err := s.store.Users().GetUserByID(r.Context(), req.UserID)
+	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
+		return
+	}
+	user, err := s.store.Users().GetUserByID(r.Context(), userID)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "User not found")
+		return
+	}
+	if user.Status != "active" || !user.TOTPEnabled {
+		s.writeError(w, http.StatusForbidden, "Account is not eligible for MFA login")
 		return
 	}
 
@@ -183,8 +223,10 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user.RecoveryCodesHash = updatedHashes
-	_ = s.store.Users().UpdateUser(r.Context(), user)
+	if err := s.store.Users().UpdateRecoveryCodes(r.Context(), user.ID, user.RecoveryCodesHash, updatedHashes); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Recovery code was already used")
+		return
+	}
 
 	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user.ID)
 	if err != nil {
@@ -205,6 +247,10 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
 	_ = s.sessions.RevokeSession(r.Context(), w, r)
 	s.writeJSON(w, http.StatusOK, map[string]bool{"logged_out": true})
 }

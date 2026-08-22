@@ -105,11 +105,17 @@ func LoadFromEnv() (*Config, error) {
 	dsn := getEnv("KY_DB_DSN", defaultDSN)
 
 	sessionSecret := getEnv("KY_SESSION_SECRET", "")
+	if env == "production" && sessionSecret == "" {
+		return nil, fmt.Errorf("KY_SESSION_SECRET is required in production")
+	}
 	if sessionSecret == "" {
 		sessionSecret = generateRandomHex(32)
 	}
 
 	encryptionKey := getEnv("KY_ENCRYPTION_KEY", "")
+	if env == "production" && encryptionKey == "" {
+		return nil, fmt.Errorf("KY_ENCRYPTION_KEY is required in production")
+	}
 	if encryptionKey == "" {
 		encryptionKey = generateRandomHex(32)
 	}

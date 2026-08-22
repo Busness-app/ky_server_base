@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strconv"
 	"time"
+
+	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
 )
 
 // PoWChallenge represents a client-side SHA256 puzzle matching the KySecurity standard.
@@ -18,6 +21,7 @@ type PoWChallenge struct {
 	Challenge string `json:"challenge"`
 	MaxNumber int    `json:"maxnumber"`
 	ExpiresAt int64  `json:"expires_at"`
+	Signature string `json:"signature"`
 }
 
 // PoWSolution represents the client's submitted answer.
@@ -26,10 +30,13 @@ type PoWSolution struct {
 	Salt      string `json:"salt"`
 	Challenge string `json:"challenge"`
 	Number    int    `json:"number"`
+	MaxNumber int    `json:"maxnumber"`
+	ExpiresAt int64  `json:"expires_at"`
+	Signature string `json:"signature"`
 }
 
 // GeneratePoWChallenge creates a puzzle of given difficulty (e.g. 5000 to 50000 max iterations).
-func GeneratePoWChallenge(difficulty int) (*PoWChallenge, error) {
+func GeneratePoWChallenge(difficulty int, signingSecret string) (*PoWChallenge, error) {
 	if difficulty <= 0 {
 		difficulty = 20000
 	}
@@ -51,17 +58,20 @@ func GeneratePoWChallenge(difficulty int) (*PoWChallenge, error) {
 	h := sha256.Sum256([]byte(targetStr))
 	challenge := hex.EncodeToString(h[:])
 
+	challengeExpires := time.Now().Add(5 * time.Minute).Unix()
+	signaturePayload := fmt.Sprintf("%s:%s:%d:%d", salt, challenge, difficulty, challengeExpires)
 	return &PoWChallenge{
 		Algorithm: "SHA-256",
 		Salt:      salt,
 		Challenge: challenge,
 		MaxNumber: difficulty,
-		ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+		ExpiresAt: challengeExpires,
+		Signature: crypto.ComputeHMACSHA256([]byte(signaturePayload), signingSecret),
 	}, nil
 }
 
 // VerifyPoWSolution decodes and validates the client's base64-encoded JSON solution.
-func VerifyPoWSolution(solutionBase64 string) bool {
+func VerifyPoWSolution(solutionBase64, signingSecret string) bool {
 	data, err := base64.StdEncoding.DecodeString(solutionBase64)
 	if err != nil {
 		data, err = base64.RawStdEncoding.DecodeString(solutionBase64)
@@ -75,7 +85,12 @@ func VerifyPoWSolution(solutionBase64 string) bool {
 		return false
 	}
 
-	if sol.Algorithm != "SHA-256" || sol.Salt == "" || sol.Challenge == "" || sol.Number < 0 {
+	if sol.Algorithm != "SHA-256" || sol.Salt == "" || sol.Challenge == "" || sol.Signature == "" ||
+		sol.Number < 1 || sol.MaxNumber < 1 || sol.Number > sol.MaxNumber || sol.ExpiresAt < time.Now().Unix() {
+		return false
+	}
+	signaturePayload := sol.Salt + ":" + sol.Challenge + ":" + strconv.Itoa(sol.MaxNumber) + ":" + strconv.FormatInt(sol.ExpiresAt, 10)
+	if !crypto.VerifyHMACSHA256([]byte(signaturePayload), signingSecret, sol.Signature) {
 		return false
 	}
 

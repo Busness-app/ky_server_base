@@ -65,14 +65,17 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 
 	cookies := w.Result().Cookies()
 	var sessionCookie *http.Cookie
+	var csrfCookie *http.Cookie
 	for _, c := range cookies {
 		if c.Name == auth.SessionCookieName {
 			sessionCookie = c
+		} else if c.Name == auth.CSRFCookieName {
+			csrfCookie = c
 			break
 		}
 	}
-	if sessionCookie == nil {
-		t.Fatalf("expected %s cookie in login response", auth.SessionCookieName)
+	if sessionCookie == nil || csrfCookie == nil {
+		t.Fatal("expected session and CSRF cookies in login response")
 	}
 
 	// 2. /api/auth/me
@@ -105,6 +108,8 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	// 4. /api/devices/pair/init
 	pairReq := httptest.NewRequest("POST", "/api/devices/pair/init", nil)
 	pairReq.AddCookie(sessionCookie)
+	pairReq.AddCookie(csrfCookie)
+	pairReq.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, pairReq)
 	if w.Code != http.StatusOK {
@@ -114,9 +119,52 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	// 5. /api/backup/drill
 	drillReq := httptest.NewRequest("POST", "/api/backup/drill", nil)
 	drillReq.AddCookie(sessionCookie)
+	drillReq.AddCookie(csrfCookie)
+	drillReq.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, drillReq)
 	if w.Code != http.StatusOK {
 		t.Fatalf("backup drill expected 200 OK, got %d", w.Code)
+	}
+}
+
+func TestInactiveAccountInvalidatesSession(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	hash, _ := crypto.HashPassword("SuperSecretPass123!")
+	user := &store.User{ID: "usr_inactive", Username: "inactive", PasswordHash: hash, Role: "admin", Status: "active", SSOProvider: "local"}
+	if err := st.Users().CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]string{"username": user.Username, "password": "SuperSecretPass123!"})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body)))
+	var session *http.Cookie
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == auth.SessionCookieName {
+			session = cookie
+		}
+	}
+	user.Status = "inactive"
+	if err := st.Users().UpdateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+	req.AddCookie(session)
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"authenticated":false`)) {
+		t.Fatalf("inactive account retained session: %s", w.Body.String())
+	}
+}
+
+func TestCookieAuthenticatedWriteRequiresCSRF(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	session := loginAs(t, srv, st, "csrf-admin", "admin")
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/theme", bytes.NewBufferString(`{"theme":"oled"}`))
+	req.AddCookie(session)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("write without CSRF got %d, want 403", w.Code)
 	}
 }

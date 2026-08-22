@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/config"
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
@@ -12,28 +13,6 @@ import (
 	"github.com/Yoshiofthewire/ky_server_base/internal/store"
 	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
 )
-
-func TestParseJWTClaims(t *testing.T) {
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-	claimsJSON, _ := json.Marshal(map[string]any{
-		"sub":                "kysignon-usr-1234",
-		"email":              "alice@busnes.app",
-		"name":               "Alice Admin",
-		"preferred_username": "alice",
-		"role":               "admin",
-	})
-	payload := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	fakeJWT := header + "." + payload + ".sig"
-
-	claims, err := sso.ParseJWTClaims(fakeJWT)
-	if err != nil {
-		t.Fatalf("ParseJWTClaims failed: %v", err)
-	}
-
-	if claims.Subject != "kysignon-usr-1234" || claims.PreferredUsername != "alice" || claims.Role != "admin" {
-		t.Errorf("unexpected parsed claims: %+v", claims)
-	}
-}
 
 func TestKySignOnWebhookSync(t *testing.T) {
 	st, err := store.Open(context.Background(), testdb.Config(t))
@@ -55,6 +34,7 @@ func TestKySignOnWebhookSync(t *testing.T) {
 		DisplayName: "Bob Engineer",
 		Role:        "user",
 		Status:      "active",
+		Timestamp:   time.Now().Unix(),
 	}
 	body, _ := json.Marshal(payload)
 	sig := crypto.ComputeHMACSHA256(body, hmacSecret)

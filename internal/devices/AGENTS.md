@@ -8,7 +8,7 @@ Owns ephemeral PIN code generation, QR payload creation, device verification, an
 
 ## Local Contracts
 - Pairing codes are 6-digit random PINs with strict 90-second TTL (`InitPairing`).
-- Expired or claimed codes are invalidated immediately.
+- Pairing requires an authenticated initiating account; successful verification atomically consumes the pending pairing and cannot be replayed.
 
 ## Verification
 - `go test -v ./internal/devices/...`

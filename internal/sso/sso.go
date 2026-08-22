@@ -1,11 +1,11 @@
 package sso
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"errors"
-	"strings"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 var (
@@ -24,21 +24,15 @@ type IdentityClaims struct {
 	Provider          string `json:"provider"` // "kysignon", "oidc", "saml"
 }
 
-// ParseJWTClaims decodes unverified JWT claims for basic identification and profile inspection.
-func ParseJWTClaims(rawJWT string) (*IdentityClaims, error) {
-	parts := strings.Split(rawJWT, ".")
-	if len(parts) < 2 {
+func verifyIDToken(ctx context.Context, issuer, clientID, rawJWT, expectedNonce string) (*IdentityClaims, error) {
+	provider, err := oidc.NewProvider(ctx, issuer)
+	if err != nil {
+		return nil, err
+	}
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: clientID}).Verify(ctx, rawJWT)
+	if err != nil || expectedNonce == "" || idToken.Nonce != expectedNonce {
 		return nil, ErrInvalidIDToken
 	}
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payloadBytes, err = base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return nil, ErrInvalidIDToken
-		}
-	}
-
 	var claims struct {
 		Sub               string `json:"sub"`
 		Email             string `json:"email"`
@@ -46,11 +40,9 @@ func ParseJWTClaims(rawJWT string) (*IdentityClaims, error) {
 		PreferredUsername string `json:"preferred_username"`
 		Role              string `json:"role"`
 	}
-
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return nil, err
+	if err := idToken.Claims(&claims); err != nil || claims.Sub == "" {
+		return nil, ErrInvalidIDToken
 	}
-
 	username := claims.PreferredUsername
 	if username == "" {
 		username = claims.Email

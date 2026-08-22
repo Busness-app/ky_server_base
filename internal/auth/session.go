@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
 	"time"
@@ -111,8 +112,21 @@ func (sm *SessionManager) AuthenticateRequest(r *http.Request) (*store.User, *st
 	if err != nil {
 		return nil, nil, err
 	}
+	if user.Status != "active" {
+		_ = sm.store.Sessions().DeleteSession(r.Context(), tokenHash)
+		return nil, nil, store.ErrNotFound
+	}
 
 	return user, sess, nil
+}
+
+func ValidateCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie(CSRFCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	header := r.Header.Get(HeaderCSRF)
+	return len(header) == len(cookie.Value) && subtle.ConstantTimeCompare([]byte(header), []byte(cookie.Value)) == 1
 }
 
 // RevokeSession deletes the active session and clears the browser cookies.

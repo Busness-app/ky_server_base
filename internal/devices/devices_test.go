@@ -39,13 +39,16 @@ func TestPairingLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyPairing failed: %v", err)
 	}
-	if verified.Status != "approved" || verified.DeviceName != "Alice iPhone" {
+	if verified.Status != "consumed" || verified.DeviceName != "Alice iPhone" {
 		t.Errorf("unexpected verified status: %+v", verified)
 	}
 
-	// 4. Poll again -> approved
+	// 4. Poll again -> consumed
 	p2, err := svc.PollPairingStatus(ctx, initRes.Secret)
-	if err != nil || p2.Status != "approved" {
-		t.Fatalf("expected approved status on second poll, got %v", p2)
+	if err != nil || p2.Status != "consumed" {
+		t.Fatalf("expected consumed status on second poll, got %v", p2)
+	}
+	if _, err := svc.VerifyPairing(ctx, initRes.Code, "Attacker", "web", "other"); err == nil {
+		t.Fatal("consumed pairing was replayed")
 	}
 }

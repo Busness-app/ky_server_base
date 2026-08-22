@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -80,7 +81,12 @@ func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillR
 		allFound := true
 		for _, rf := range reqFiles {
 			pathStr := fmt.Sprintf("%v", rf)
-			fullPath := filepath.Join(scratchDir, pathStr)
+			fullPath, safe := drillPath(scratchDir, pathStr)
+			if !safe {
+				result.Passed = false
+				result.Checks = append(result.Checks, CheckItem{Name: "Required File: " + pathStr, Passed: false, Message: "Unsafe path"})
+				continue
+			}
 			fi, err := os.Stat(fullPath)
 			if err != nil || fi.Size() == 0 {
 				allFound = false
@@ -106,7 +112,12 @@ func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillR
 		if sqlitePaths, ok := recipe["sqlite_paths"].([]interface{}); ok {
 			for _, sp := range sqlitePaths {
 				dbPathRel := fmt.Sprintf("%v", sp)
-				dbPathFull := filepath.Join(scratchDir, dbPathRel)
+				dbPathFull, safe := drillPath(scratchDir, dbPathRel)
+				if !safe {
+					result.Passed = false
+					result.Checks = append(result.Checks, CheckItem{Name: "SQLite Integrity: " + dbPathRel, Passed: false, Message: "Unsafe path"})
+					continue
+				}
 
 				db, err := sql.Open("sqlite", dbPathFull)
 				if err != nil {
@@ -143,22 +154,28 @@ func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillR
 
 	// 4. Check Environment Variables
 	if expEnv, ok := recipe["expected_env"].([]interface{}); ok && len(expEnv) > 0 {
-		result.Checks = append(result.Checks, CheckItem{
-			Name:    "Environment Variables",
-			Passed:  true,
-			Message: fmt.Sprintf("All %d declared environment variables verified", len(expEnv)),
-		})
-	}
-
-	// 5. Check Ports
-	if expPorts, ok := recipe["expected_ports"].([]interface{}); ok && len(expPorts) > 0 {
-		result.Checks = append(result.Checks, CheckItem{
-			Name:    "Network Ports",
-			Passed:  true,
-			Message: fmt.Sprintf("All %d declared network ports verified", len(expPorts)),
-		})
+		for _, name := range expEnv {
+			envName := fmt.Sprint(name)
+			_, found := os.LookupEnv(envName)
+			if !found {
+				result.Passed = false
+			}
+			message := "Missing"
+			if found {
+				message = "Configured"
+			}
+			result.Checks = append(result.Checks, CheckItem{Name: "Environment: " + envName, Passed: found, Message: message})
+		}
 	}
 
 	result.DurationMS = time.Since(start).Milliseconds()
 	return result, nil
+}
+
+func drillPath(root, name string) (string, bool) {
+	clean := filepath.Clean(name)
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return filepath.Join(root, clean), true
 }

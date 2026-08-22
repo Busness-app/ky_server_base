@@ -3,6 +3,7 @@ package backup_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -53,7 +54,18 @@ func TestShamirSecretSharing(t *testing.T) {
 	}
 }
 
+func TestExtractCapsuleRejectsTraversal(t *testing.T) {
+	capsule, key, err := backup.CreateCapsule("test", "1", []backup.BackupFile{{Path: "../../escape", Data: []byte("owned"), Mode: 0600}}, nil, nil, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.ExtractCapsule(capsule, key, t.TempDir()); !errors.Is(err, backup.ErrUnsafePath) {
+		t.Fatalf("got %v, want ErrUnsafePath", err)
+	}
+}
+
 func TestCapsuleLifecycleAndRestoreDrill(t *testing.T) {
+	t.Setenv("KY_PORT", "8080")
 	ctx := context.Background()
 	tmpDir := t.TempDir()
 

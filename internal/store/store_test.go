@@ -175,12 +175,12 @@ func TestDevicePairingLifecycle(t *testing.T) {
 		t.Errorf("unexpected secret: %s", byCode.Secret)
 	}
 
-	if err := st.Devices().UpdatePairingStatus(ctx, pairing.Secret, "paired", "user-123", "fcm-token-xyz"); err != nil {
-		t.Fatalf("UpdatePairingStatus error: %v", err)
+	if err := st.Devices().ConsumePairing(ctx, pairing.Secret, "Pixel", "android", "fcm-token-xyz"); err != nil {
+		t.Fatalf("ConsumePairing error: %v", err)
 	}
 
 	updated, _ := st.Devices().GetPairingBySecret(ctx, pairing.Secret)
-	if updated.Status != "paired" || updated.PushToken != "fcm-token-xyz" {
+	if updated.Status != "consumed" || updated.PushToken != "fcm-token-xyz" {
 		t.Errorf("pairing update failed: %+v", updated)
 	}
 }

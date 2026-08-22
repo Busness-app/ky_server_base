@@ -35,6 +35,12 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type MFAChallenge struct {
+	TokenHash string
+	UserID    string
+	ExpiresAt time.Time
+}
+
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.
 type DevicePairing struct {
 	Code       string    `json:"code"`   // 6-digit verification code

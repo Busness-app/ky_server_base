@@ -183,6 +183,26 @@ CREATE TABLE IF NOT EXISTS server_settings (
 );
 `,
 	},
+	{
+		Version: 2,
+		Name:    "one_time_auth_challenges",
+		SQLite: `
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_at);
+`,
+		Postgres: `
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_at);
+`,
+	},
 }
 
 // Run executes all pending migrations for the specified database driver.

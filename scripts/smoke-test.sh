@@ -116,8 +116,10 @@ contains "anonymous settings hide db_driver" \
   "$(if echo "$ANON_SETTINGS" | grep -q 'db_driver'; then echo leaked; else echo hidden; fi)" "hidden"
 contains "admin settings include db_driver" "$(curl -s -b "$WORK/cookies" "$BASE/api/settings")" '"db_driver"'
 check "admin can export recovery kit" "$(status -b "$WORK/cookies" "$BASE/api/backup/export-kit")" "200"
-check "device pairing init" "$(status -b "$WORK/cookies" -X POST "$BASE/api/devices/pair/init")" "200"
-check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -X POST "$BASE/api/auth/logout")" "200"
+CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
+check "cookie write rejects missing CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/devices/pair/init")" "403"
+check "device pairing init" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")" "200"
+check "logout succeeds" "$(status -b "$WORK/cookies" -c "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/auth/logout")" "200"
 contains "session dead after logout" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false' 
 stop_server
 

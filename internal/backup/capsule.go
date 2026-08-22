@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
@@ -19,7 +20,11 @@ import (
 
 var (
 	ErrCorruptCapsule = errors.New("corrupt capsule container or failed hash validation")
+	ErrUnsafePath     = errors.New("capsule contains an unsafe path or file type")
 )
+
+const maxExtractedBytes int64 = 512 << 20
+const maxExtractedFiles = 10000
 
 // Manifest contains metadata and verification instructions for a recovery capsule.
 type Manifest struct {
@@ -155,6 +160,7 @@ func ExtractCapsule(capsule *Capsule, key []byte, targetDir string) ([]BackupFil
 
 	tr := tar.NewReader(gr)
 	var extractedFiles []BackupFile
+	var totalExtracted int64
 
 	if targetDir != "" {
 		if err := os.MkdirAll(targetDir, 0700); err != nil {
@@ -171,24 +177,46 @@ func ExtractCapsule(capsule *Capsule, key []byte, targetDir string) ([]BackupFil
 			return nil, err
 		}
 
-		data, err := io.ReadAll(tr)
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			return nil, ErrUnsafePath
+		}
+		cleanName := filepath.Clean(hdr.Name)
+		if cleanName == "." || filepath.IsAbs(cleanName) || cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) {
+			return nil, ErrUnsafePath
+		}
+		if len(extractedFiles) >= maxExtractedFiles || hdr.Size < 0 || hdr.Size > maxExtractedBytes {
+			return nil, ErrCorruptCapsule
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxExtractedBytes+1))
 		if err != nil {
 			return nil, err
 		}
+		if int64(len(data)) > maxExtractedBytes {
+			return nil, ErrCorruptCapsule
+		}
+		totalExtracted += int64(len(data))
+		if totalExtracted > maxExtractedBytes {
+			return nil, ErrCorruptCapsule
+		}
 
 		file := BackupFile{
-			Path: hdr.Name,
+			Path: cleanName,
 			Data: data,
 			Mode: hdr.Mode,
 		}
 		extractedFiles = append(extractedFiles, file)
 
 		if targetDir != "" {
-			destPath := filepath.Join(targetDir, hdr.Name)
+			destPath := filepath.Join(targetDir, cleanName)
+			rel, err := filepath.Rel(targetDir, destPath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return nil, ErrUnsafePath
+			}
 			if err := os.MkdirAll(filepath.Dir(destPath), 0700); err != nil {
 				return nil, err
 			}
-			if err := os.WriteFile(destPath, data, os.FileMode(hdr.Mode)); err != nil {
+			mode := os.FileMode(hdr.Mode) & 0700
+			if err := os.WriteFile(destPath, data, mode); err != nil {
 				return nil, err
 			}
 		}

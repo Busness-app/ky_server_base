@@ -108,14 +108,17 @@ func (s *PairingService) VerifyPairing(ctx context.Context, codeOrSecret, device
 		return nil, ErrPairingExpired
 	}
 
-	if err := s.store.Devices().UpdatePairingStatus(ctx, pairing.Secret, "approved", pairing.UserID, pushToken); err != nil {
+	if pairing.Status != "pending" {
+		return nil, ErrPairingNotFound
+	}
+	if err := s.store.Devices().ConsumePairing(ctx, pairing.Secret, deviceName, platform, pushToken); err != nil {
 		return nil, err
 	}
 
 	pairing.DeviceName = deviceName
 	pairing.Platform = platform
 	pairing.PushToken = pushToken
-	pairing.Status = "approved"
+	pairing.Status = "consumed"
 
 	return pairing, nil
 }

@@ -50,7 +50,8 @@ func TestRecoveryCodes(t *testing.T) {
 }
 
 func TestProofOfWorkChallenge(t *testing.T) {
-	challenge, err := auth.GeneratePoWChallenge(1000)
+	const secret = "test-signing-secret"
+	challenge, err := auth.GeneratePoWChallenge(1000, secret)
 	if err != nil {
 		t.Fatalf("failed to generate PoW challenge: %v", err)
 	}
@@ -63,10 +64,13 @@ func TestProofOfWorkChallenge(t *testing.T) {
 			Salt:      challenge.Salt,
 			Challenge: challenge.Challenge,
 			Number:    i,
+			MaxNumber: challenge.MaxNumber,
+			ExpiresAt: challenge.ExpiresAt,
+			Signature: challenge.Signature,
 		}
 		solBytes, _ := json.Marshal(sol)
 		solB64 := base64.StdEncoding.EncodeToString(solBytes)
-		if auth.VerifyPoWSolution(solB64) {
+		if auth.VerifyPoWSolution(solB64, secret) {
 			winningNumber = i
 			break
 		}
@@ -74,6 +78,11 @@ func TestProofOfWorkChallenge(t *testing.T) {
 
 	if winningNumber == -1 {
 		t.Errorf("failed to solve PoW within max iterations")
+	}
+	forged := auth.PoWSolution{Algorithm: "SHA-256", Salt: "mine", Challenge: "fake", Number: 1, MaxNumber: 1, ExpiresAt: challenge.ExpiresAt, Signature: challenge.Signature}
+	forgedJSON, _ := json.Marshal(forged)
+	if auth.VerifyPoWSolution(base64.StdEncoding.EncodeToString(forgedJSON), secret) {
+		t.Fatal("accepted forged challenge metadata")
 	}
 }
 

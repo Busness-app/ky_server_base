@@ -2,8 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
 	"github.com/Yoshiofthewire/ky_server_base/internal/backup"
@@ -16,16 +20,23 @@ import (
 )
 
 type Server struct {
-	config   *config.Config
-	store    store.Store
-	sessions *auth.SessionManager
-	pairing  *devices.PairingService
-	kysignon *sso.KySignOnClient
-	oidc     *sso.GenericOIDCClient
-	saml     *sso.SAMLServiceProvider
-	scim     *scim.Server
-	recovery *backup.KyRecoveryClient
-	mux      *http.ServeMux
+	config     *config.Config
+	store      store.Store
+	sessions   *auth.SessionManager
+	pairing    *devices.PairingService
+	kysignon   *sso.KySignOnClient
+	oidc       *sso.GenericOIDCClient
+	saml       *sso.SAMLServiceProvider
+	scim       *scim.Server
+	recovery   *backup.KyRecoveryClient
+	mux        *http.ServeMux
+	attemptsMu sync.Mutex
+	attempts   map[string]attemptWindow
+}
+
+type attemptWindow struct {
+	count int
+	reset time.Time
 }
 
 func NewServer(cfg *config.Config, st store.Store) *Server {
@@ -48,10 +59,39 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		scim:     scimSrv,
 		recovery: recovery,
 		mux:      http.NewServeMux(),
+		attempts: make(map[string]attemptWindow),
 	}
 
 	s.routes()
 	return s
+}
+
+func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool {
+	now := time.Now()
+	s.attemptsMu.Lock()
+	defer s.attemptsMu.Unlock()
+	entry := s.attempts[key]
+	if now.After(entry.reset) {
+		entry = attemptWindow{reset: now.Add(window)}
+	}
+	entry.count++
+	s.attempts[key] = entry
+	if len(s.attempts) > 10000 {
+		for candidate, window := range s.attempts {
+			if now.After(window.reset) {
+				delete(s.attempts, candidate)
+			}
+		}
+	}
+	return entry.count <= limit
+}
+
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (s *Server) routes() {
@@ -70,7 +110,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 
 	// Devices & Ephemeral QR Pairing
-	s.mux.HandleFunc("/api/devices/pair/init", s.handlePairInit)
+	s.mux.HandleFunc("/api/devices/pair/init", s.requireAuthenticated(s.handlePairInit))
 	s.mux.HandleFunc("/api/devices/pair/verify", s.handlePairVerify)
 	s.mux.HandleFunc("/api/devices/pair/poll", s.handlePairPoll)
 
@@ -106,19 +146,49 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) requireAuthenticated(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
+			s.writeError(w, http.StatusUnauthorized, "Authentication required")
+			return
+		}
+		h(w, r)
+	}
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Enable CORS for local Vite dev / wrappers.
-	// FIXME(security): wildcard origin. Browsers block credentialed cross-origin
-	// requests under "*", so sessions are not reachable this way, but any site can
-	// read every unauthenticated response. Replace with an allowlist built from
-	// KY_APP_URL plus an opt-in dev origin.
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+	if s.config.Security.CookieSecure {
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	}
+
+	origin := r.Header.Get("Origin")
+	if origin != "" && sameOrigin(origin, s.config.Server.AppURL) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Vary", "Origin")
+	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-KySignOn-Signature")
 
 	if r.Method == http.MethodOptions {
+		if origin != "" && !sameOrigin(origin, s.config.Server.AppURL) {
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		return
+	}
+
+	if isUnsafeMethod(r.Method) && hasSessionCookie(r) && !csrfExempt(r.URL.Path) && !auth.ValidateCSRF(r) {
+		s.writeError(w, http.StatusForbidden, "Invalid CSRF token")
+		return
+	}
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	}
 
 	// SCIM middleware
@@ -128,6 +198,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mux.ServeHTTP(w, r)
+}
+
+func isUnsafeMethod(method string) bool {
+	return method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions
+}
+
+func hasSessionCookie(r *http.Request) bool {
+	cookie, err := r.Cookie(auth.SessionCookieName)
+	return err == nil && cookie.Value != ""
+}
+
+func csrfExempt(path string) bool {
+	return path == "/api/auth/login" || strings.HasPrefix(path, "/api/auth/mfa/") || path == "/api/sso/kysignon/sync"
+}
+
+func sameOrigin(origin, appURL string) bool {
+	a, err := url.Parse(appURL)
+	if err != nil || a.Scheme == "" || a.Host == "" {
+		return false
+	}
+	o, err := url.Parse(origin)
+	return err == nil && o.Scheme == a.Scheme && o.Host == a.Host
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {

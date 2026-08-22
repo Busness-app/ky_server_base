@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { Smartphone, CheckCircle, X, Copy, Check } from 'lucide-react';
+import { secureFetch } from '../api';
 
 interface QRPairingModalProps {
   onClose: () => void;
@@ -20,7 +21,7 @@ export const QRPairingModal: React.FC<QRPairingModalProps> = ({ onClose }) => {
 
     const init = async () => {
       try {
-        const resp = await fetch('/api/devices/pair/init', { method: 'POST' });
+        const resp = await secureFetch('/api/devices/pair/init', { method: 'POST' });
         const data = await resp.json();
         setCode(data.code);
 

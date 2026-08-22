@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 type VerifyDeviceRequest struct {
@@ -19,12 +20,12 @@ func (s *Server) handlePairInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, _, err := s.sessions.AuthenticateRequest(r)
-	userID := ""
-	if err == nil && user != nil {
-		userID = user.ID
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
+		return
 	}
 
-	res, err := s.pairing.InitPairing(r.Context(), userID)
+	res, err := s.pairing.InitPairing(r.Context(), user.ID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to initialize pairing")
 		return
@@ -42,6 +43,10 @@ func (s *Server) handlePairVerify(w http.ResponseWriter, r *http.Request) {
 	var req VerifyDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if !s.allowAttempt("pair:"+requestIP(r), 10, time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many pairing attempts")
 		return
 	}
 

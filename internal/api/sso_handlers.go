@@ -11,6 +11,7 @@ import (
 
 func (s *Server) handleKySignOnLogin(w http.ResponseWriter, r *http.Request) {
 	state := crypto.RandomHex(16)
+	nonce := crypto.RandomHex(16)
 	verifier, challenge, err := crypto.GeneratePKCE()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to generate PKCE")
@@ -18,7 +19,7 @@ func (s *Server) handleKySignOnLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	redirectURI := fmt.Sprintf("%s/api/sso/kysignon/callback", s.config.Server.AppURL)
-	authURL, err := s.kysignon.BuildAuthURL(redirectURI, state, challenge)
+	authURL, err := s.kysignon.BuildAuthURL(redirectURI, state, challenge, nonce)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -29,6 +30,15 @@ func (s *Server) handleKySignOnLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "ky_pkce_" + state,
 		Value:    verifier,
 		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   s.config.Security.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "ky_nonce_" + state,
+		Value:    nonce,
+		Path:     "/api/sso/kysignon/callback",
 		MaxAge:   300,
 		HttpOnly: true,
 		Secure:   s.config.Security.CookieSecure,
@@ -48,9 +58,14 @@ func (s *Server) handleKySignOnCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	verifier := cookie.Value
+	nonceCookie, err := r.Cookie("ky_nonce_" + state)
+	if err != nil || nonceCookie.Value == "" {
+		s.writeError(w, http.StatusBadRequest, "Invalid or expired SSO nonce")
+		return
+	}
 
 	redirectURI := fmt.Sprintf("%s/api/sso/kysignon/callback", s.config.Server.AppURL)
-	claims, err := s.kysignon.ExchangeCode(r.Context(), code, verifier, redirectURI)
+	claims, err := s.kysignon.ExchangeCode(r.Context(), code, verifier, redirectURI, nonceCookie.Value)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, fmt.Sprintf("SSO exchange failed: %v", err))
 		return
@@ -70,7 +85,10 @@ func (s *Server) handleKySignOnCallback(w http.ResponseWriter, r *http.Request) 
 				SSOProvider: "kysignon",
 				SSOSubject:  claims.Subject,
 			}
-			_ = s.store.Users().CreateUser(r.Context(), user)
+			if err := s.store.Users().CreateUser(r.Context(), user); err != nil {
+				s.writeError(w, http.StatusInternalServerError, "Failed to provision SSO user")
+				return
+			}
 		} else {
 			s.writeError(w, http.StatusForbidden, "User account not provisioned")
 			return

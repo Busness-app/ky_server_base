@@ -59,6 +59,8 @@ func do(t *testing.T, srv *api.Server, method, path string, cookie *http.Cookie)
 	req := httptest.NewRequest(method, path, nil)
 	if cookie != nil {
 		req.AddCookie(cookie)
+		req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
+		req.Header.Set(auth.HeaderCSRF, "test-csrf")
 	}
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)

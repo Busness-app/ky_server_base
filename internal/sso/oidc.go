@@ -87,7 +87,7 @@ func (g *GenericOIDCClient) discover(ctx context.Context) (*OIDCDiscovery, error
 }
 
 // BuildAuthURL creates the standard authorization URL with PKCE.
-func (g *GenericOIDCClient) BuildAuthURL(ctx context.Context, redirectURI, state, challenge string) (string, error) {
+func (g *GenericOIDCClient) BuildAuthURL(ctx context.Context, redirectURI, state, challenge, nonce string) (string, error) {
 	if g.config.GenericOIDCIssuer == "" || g.config.GenericOIDCClientID == "" {
 		return "", ErrProviderDisabled
 	}
@@ -107,12 +107,13 @@ func (g *GenericOIDCClient) BuildAuthURL(ctx context.Context, redirectURI, state
 	v.Set("state", state)
 	v.Set("code_challenge", challenge)
 	v.Set("code_challenge_method", "S256")
+	v.Set("nonce", nonce)
 
 	return fmt.Sprintf("%s?%s", doc.AuthorizationEndpoint, v.Encode()), nil
 }
 
 // ExchangeCode completes the code exchange for identity tokens.
-func (g *GenericOIDCClient) ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*IdentityClaims, error) {
+func (g *GenericOIDCClient) ExchangeCode(ctx context.Context, code, verifier, redirectURI, expectedNonce string) (*IdentityClaims, error) {
 	doc, err := g.discover(ctx)
 	if err != nil {
 		tokenEndpoint := fmt.Sprintf("%s/oauth/token", strings.TrimRight(g.config.GenericOIDCIssuer, "/"))
@@ -158,7 +159,7 @@ func (g *GenericOIDCClient) ExchangeCode(ctx context.Context, code, verifier, re
 		return nil, errors.New("missing id_token in response")
 	}
 
-	claims, err := ParseJWTClaims(tokenResp.IDToken)
+	claims, err := verifyIDToken(ctx, strings.TrimRight(g.config.GenericOIDCIssuer, "/"), g.config.GenericOIDCClientID, tokenResp.IDToken, expectedNonce)
 	if err != nil {
 		return nil, err
 	}

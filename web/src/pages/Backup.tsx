@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Archive, Play, Download, CheckCircle2, XCircle, Loader2, Link2 } from 'lucide-react';
+import { secureFetch } from '../api';
 
 export const Backup: React.FC = () => {
   const [runningDrill, setRunningDrill] = useState<boolean>(false);
@@ -13,7 +14,7 @@ export const Backup: React.FC = () => {
     setRunningDrill(true);
     setDrillResult(null);
     try {
-      const resp = await fetch('/api/backup/drill', { method: 'POST' });
+      const resp = await secureFetch('/api/backup/drill', { method: 'POST' });
       const data = await resp.json();
       setDrillResult(data);
     } catch (err) {
@@ -32,7 +33,7 @@ export const Backup: React.FC = () => {
     setPairingLoading(true);
     setPairStatus('');
     try {
-      const resp = await fetch('/api/backup/pair-remote', {
+      const resp = await secureFetch('/api/backup/pair-remote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

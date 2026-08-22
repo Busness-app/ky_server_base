@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
@@ -22,9 +23,14 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 
 	var files []backup.BackupFile
 	for _, f := range payload.Files {
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
+			return
+		}
 		files = append(files, backup.BackupFile{
 			Path: f.Path,
-			Data: []byte(f.DataBase64),
+			Data: data,
 			Mode: f.Mode,
 		})
 	}
@@ -47,12 +53,21 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExportRecoveryKit(w http.ResponseWriter, r *http.Request) {
-	payload, _ := backup.BuildLocalPayload(s.config, "1.0.0")
+	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
+		return
+	}
 	var files []backup.BackupFile
 	for _, f := range payload.Files {
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
+			return
+		}
 		files = append(files, backup.BackupFile{
 			Path: f.Path,
-			Data: []byte(f.DataBase64),
+			Data: data,
 			Mode: f.Mode,
 		})
 	}
@@ -88,12 +103,18 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 
 	token, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName)
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
+		s.writeError(w, http.StatusBadRequest, "Recovery pairing failed")
 		return
 	}
 
-	_ = s.store.Settings().SetSetting(r.Context(), "kyrecovery_url", req.RecoveryURL)
-	_ = s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", token)
+	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_url", req.RecoveryURL); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
+		return
+	}
+	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", token); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
+		return
+	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"paired":       true,
