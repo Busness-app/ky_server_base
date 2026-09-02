@@ -448,3 +448,58 @@ git commit -m "feat(capsule): open capsules from every implementation the suite 
 - **It does not unify `internal/crypto`.** The `EncryptAESGCM` signature fork — `(plaintext, keyString)` against `(key, plaintext)` — is real and worth fixing, but it is a five-repo change with no data-loss risk, and bundling it here would put the backup-compatibility work behind it.
 - **It does not rewrite existing capsules.** Detection on read means no migration pass over anyone's backups, which is the whole point.
 - **It does not change what any product writes today.** Products converge on `StdEncoding` when they migrate onto the shared package, not before.
+
+---
+
+## Outcome, 2026-09-02
+
+**Done.** `ky-primitives/capsule` exists at `/home/yoshi/busness.app/ky-primitives`,
+commit `908ddf0`, on disk only — the GitHub repo has not been created and nothing has been
+pushed.
+
+Built against the corrected model, not the original one:
+
+- `Open(raw, key, targetDir)` reads **both** persisted containers.
+- `Seal(...)` writes `kycap/1` only.
+- `DecodeCiphertext` / `EncodeCiphertext` as specified in Task 2, with an added
+  exhaustive test that trying standard before raw-url is unambiguous across every length
+  class.
+- The extraction hardening is ported from `kysignon-server` and applied to **both**
+  containers, so a KyRecovery capsule opened through this package gets path, type, size
+  and mode checks its own `Unpack` never applied.
+
+### Compatibility, proven in both directions
+
+| Check | Result |
+|---|---|
+| `ky-primitives` opens `kysignon.kycap` | PASS |
+| `ky-primitives` opens `kyrecovery.kycap` | PASS |
+| `kysignon-server` `ParseCapsule`+`ExtractCapsule` open a capsule sealed by `ky-primitives`, unmodified | PASS |
+
+The third is the one that matters for migration: a product moved onto the shared package
+writes capsules the unmigrated products can still read.
+
+### Deviations from this plan
+
+1. **Fixtures were not copied into `ky_server_base/testdata/capsules/`.** The plan wanted
+   them in both places so the scaffold could prove its migration broke nothing. The
+   scaffold persists no capsule, so it has no on-disk compatibility to prove and the copy
+   would be decoration. The fixtures live in `ky-primitives/testdata/capsules/` only.
+2. **Only two fixtures, not three.** The third and fourth implementations persist nothing.
+3. **`Seal` does not split the key into Shamir shares.** `kycap/1` has never carried
+   shares; they belong to the recovery kit beside the capsule. Callers split the returned
+   key.
+
+### Left open
+
+- **The GitHub repo does not exist.** `github.com/Busness-app/ky-primitives` must be
+  created before any repo can depend on this.
+- **No product has been migrated onto it.** That is the next plan, and it needs the
+  repo published first.
+- **`kyrecovery-server`'s own `Unpack` still has no path hardening** — it puts
+  `hdr.Name` straight into a map with no `safeRelPath` and no entry-type check. Opening
+  through `ky-primitives` fixes that for callers who migrate; it does not fix KyRecovery
+  itself.
+- **The recovery kit question.** `ky_server_base` and `gridlock-server` hand an operator
+  a kit containing the shares but not the payload. Whether that is intended was not
+  established here.
