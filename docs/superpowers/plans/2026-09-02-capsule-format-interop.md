@@ -19,6 +19,29 @@
 
 ---
 
+## Decision and correction, 2026-09-02
+
+**This plan's premise was wrong and Task 1 disproved it.** See
+[the capsule interop findings](../../capsule-interop-findings.md) for the measured detail.
+
+Corrected model:
+
+- There are **four** implementations, not three. `kyrecovery-server/internal/capsule` was
+  missed by a filename-based survey and is one of only two that persist anything.
+- The two persisted formats diverge at the **container** layer, not the encoding layer:
+  KySignOn writes JSON (`kycap/1`), KyRecovery writes a tar of `manifest.json`,
+  `nonce.bin`, `payload.enc`. Cross-parsing fails in both directions before any key is
+  examined.
+- `ky_server_base` and `gridlock-server` **persist no capsule at all**, so the base64
+  alphabet fork orphans nothing. The tolerant decoder is still worth having; it is not a
+  data-loss fix.
+
+**Decision (Yoshi, 2026-09-02): the suite writes KySignOn's `kycap/1` JSON container, and
+reads both.** Reading KyRecovery's tar must keep working — those capsules hold real
+recovery data on disk today.
+
+Tasks 2 and 3 below are superseded by Tasks 4 and 5.
+
 ## Why this plan exists
 
 The parent plan's Task 2 Step 3 says: *"Port the capsule format with a golden capsule fixture generated from the current `kysignon-server` implementation, so a capsule written before this plan opens afterwards."*
