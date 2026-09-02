@@ -28,7 +28,7 @@ Inside it, each repo's tasks are still independently executable and revertible.
 ## Sequencing
 
 **First, and blocking almost everything:** the module path migration. The suite moved to
-`github.com/busness-app/` and no `go.mod` followed. `ky-primitives` cannot be tagged until
+`github.com/Busness-app/` and no `go.mod` followed. `ky-primitives` cannot be tagged until
 its path is settled, three repos cannot be imported at all until they have a domain, and
 `gridlock-server` still claims the scaffold's identity. It is eight pure renames with no
 behaviour change.
@@ -63,12 +63,12 @@ checked. The corrections, with what proved each:
   up.
 - **The pairing spec drift is not purely additive**, which trips the parent plan's
   escalation gate — but the server's own code resolves it without a human decision.
-- **No `go.mod` followed the move to `github.com/busness-app/`.** Four conventions are in
+- **No `go.mod` followed the move to `github.com/Busness-app/`.** Four conventions are in
   use, including one repo claiming another's identity. See below.
 
 ## The module path question is now answered
 
-The suite has moved to `github.com/busness-app/`. The remotes went; the module paths did
+The suite has moved to `github.com/Busness-app/`. The remotes went; the module paths did
 not:
 
 ```
@@ -85,14 +85,23 @@ kyrecovery-server                              Busness-app/kyrecovery-server
 
 [The module path migration plan](2026-09-02-module-path-migration.md) fixes all eight.
 
-**One thing to confirm: the case.** These plans use `github.com/busness-app/` in lowercase,
-as written in the instruction to make the move. The GitHub remotes render as
-`Busness-app`. GitHub does not care, but **Go module paths are case-sensitive** — an
-uppercase letter is escaped as `!b` in the module cache and on the proxy, so
-`github.com/busness-app/x` and `github.com/Busness-app/x` are two different modules to the
-toolchain. The suite already has this exact inconsistency today, with `yoshiofthewire`
-and `Yoshiofthewire` both in use.
+**The casing is settled: `Busness-app`, capital B, matching the GitHub org.** Taken from
+the API rather than a remote URL, because remote URLs are case-insensitive and prove
+nothing:
 
-Lowercase is the safer default and is what is written throughout. Nothing is implemented
-yet, so switching is a one-line change across these plans — but it is much more expensive
-after eight repos have been renamed.
+```bash
+gh api orgs/Busness-app --jq .login          # -> Busness-app
+gh api orgs/Busness-app/repos --jq '.[].name'
+```
+
+Go module paths are case-sensitive — an uppercase letter is escaped as `!b` in the module
+cache and on the proxy — so this has to be exact everywhere. It is normal and works fine;
+it just cannot be half-applied, which is the state the suite is in today with
+`yoshiofthewire` and `Yoshiofthewire` both live.
+
+**`gridlock-server` is not in the org.** The repo list above returns every other repo in
+the suite and no `gridlock-server`; that repo has no `origin` and exists only on this
+machine. Its module should still declare `github.com/Busness-app/gridlock-server` — a main
+module's own path is never resolved over the network, so nothing breaks locally — but
+nothing can import it until the repository exists. Creating it is a decision for a human,
+raised in the migration plan rather than acted on.

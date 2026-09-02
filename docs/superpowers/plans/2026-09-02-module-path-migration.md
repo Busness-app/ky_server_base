@@ -2,17 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every Go module in the suite declare the path it actually lives at, `github.com/busness-app/<name>`, before anything imports anything else.
+**Goal:** Make every Go module in the suite declare the path it actually lives at, `github.com/Busness-app/<name>`, before anything imports anything else.
 
 **Architecture:** Eight Go repositories, four naming conventions, none of them matching the org the code now lives in. Each repo is renamed on its own — a pure find-and-replace over its own import prefix, verified by a diff that must contain nothing but the path change.
 
 **Tech Stack:** Go 1.26+. No behaviour changes anywhere in this plan.
 
-**Spec:** The suite moved to `github.com/busness-app/`. This plan is the go.mod half of that move, which did not travel with the remotes.
+**Spec:** The suite moved to `github.com/Busness-app/`. This plan is the go.mod half of that move, which did not travel with the remotes.
 
 ## Global Constraints
 
-- **The canonical prefix is `github.com/busness-app/`, lowercase.** Go module paths are case-sensitive and an uppercase letter is escaped as `!b` in the module cache and on the proxy. The suite already carries the scar of getting this inconsistent — `kydns-server` and `kynotes-server` say `yoshiofthewire` while three others say `Yoshiofthewire`.
+- **The canonical prefix is `github.com/Busness-app/`, capital B, matching the GitHub org exactly.** Confirmed against the API, not inferred from a remote URL — `gh api orgs/Busness-app --jq .login` returns `Busness-app`. Repository names come from `gh api orgs/Busness-app/repos --jq '.[].name'` for the same reason.
+- **Match the casing exactly, everywhere.** Go module paths are case-sensitive: an uppercase letter is escaped as `!b` in the module cache and on the proxy. That is normal and works fine — plenty of published modules do it — but `github.com/Busness-app/x` and `github.com/busness-app/x` are two different modules to the toolchain. The suite already carries the scar of getting this inconsistent: `kydns-server` and `kynotes-server` say `yoshiofthewire` while three others say `Yoshiofthewire`.
 - **No behaviour change in any repo.** A rename commit that also changes logic is unreviewable.
 - Gates stay green in every repo touched: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
 - Each repo is renamed and committed **separately**. They are separate repositories.
@@ -21,7 +22,7 @@
 
 ## Why this plan exists, and why it goes first
 
-The repositories moved to the `busness-app` GitHub organisation. **No `go.mod` followed them.** Measured 2026-09-02:
+The repositories moved to the `Busness-app` GitHub organisation. **No `go.mod` followed them.** Measured 2026-09-02:
 
 | Repo | `go.mod` says | `origin` says |
 |---|---|---|
@@ -40,7 +41,7 @@ Four conventions: the old org capitalised, the old org lowercased, a bare name w
 
 ### A correction to the Shamir findings
 
-[The Shamir interop findings](../../shamir-interop-findings.md) say the parent plan's `github.com/Busness-app/<name>` convention "is wrong" and that the real prefix is `github.com/Yoshiofthewire/`. **That correction was itself wrong.** It described `go.mod` accurately, but `go.mod` was the stale artefact — the parent plan named the destination, not the current state. The destination stands; only the case changes, to lowercase.
+[The Shamir interop findings](../../shamir-interop-findings.md) say the parent plan's `github.com/Busness-app/<name>` convention "is wrong" and that the real prefix is `github.com/Yoshiofthewire/`. **That correction was itself wrong.** It described `go.mod` accurately, but `go.mod` was the stale artefact — the parent plan named the destination, not the current state. The destination stands, in the org's own casing: `github.com/Busness-app/`.
 
 ### A bare module path is not harmless
 
@@ -70,7 +71,7 @@ Expected: 34 paths — 32 Go files, `go.mod`, `scripts/ky-init.sh`.
 
 ```bash
 xargs -a /tmp/gridlock-refs.txt \
-  sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/busness-app/gridlock-server|g'
+  sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/Busness-app/gridlock-server|g'
 ```
 
 - [ ] **Step 3: Verify nothing was missed and nothing else changed**
@@ -82,7 +83,7 @@ grep -rn "Yoshiofthewire" . ; echo "exit=$?"
 Expected: no output, `exit=1`.
 
 ```bash
-git diff | grep -E "^[-+]" | grep -vE "busness-app|Yoshiofthewire" | grep -vE "^(---|\+\+\+)"
+git diff | grep -E "^[-+]" | grep -vE "Busness-app|Yoshiofthewire" | grep -vE "^(---|\+\+\+)"
 ```
 
 Must print nothing. **Any line it prints is a change the rename should not have made.**
@@ -93,7 +94,7 @@ Must print nothing. **Any line it prints is a change the rename should not have 
 go mod tidy
 gofmt -l . && go vet ./... && go test -race -count=1 ./... 2>&1 | tee /tmp/gridlock-after.txt
 diff <(sed 's|Yoshiofthewire/ky_server_base|MODULE|g' /tmp/gridlock-before.txt) \
-     <(sed 's|busness-app/gridlock-server|MODULE|g' /tmp/gridlock-after.txt)
+     <(sed 's|Busness-app/gridlock-server|MODULE|g' /tmp/gridlock-after.txt)
 ```
 
 Only timing should differ.
@@ -104,9 +105,24 @@ Only timing should differ.
 git -C /home/yoshi/busness.app/gridlock-server remote -v
 ```
 
-It prints nothing today. Every other repo in the suite has a `Busness-app` remote; this one exists only on this machine, which is part of why its module path went unnoticed for so long.
+It prints nothing today, and **the repository does not exist on GitHub at all**:
 
-**Ask the human before adding a remote.** Creating or pushing to a repository is an outward-facing action and the name is theirs to choose. Record the answer here either way — a repo that exists on one laptop is a bus factor, not a design.
+```bash
+gh api orgs/Busness-app/repos --jq '.[].name' | grep -i gridlock ; echo "exit=$?"
+```
+
+Returns nothing, `exit=1`. Every other repo in the suite is in the org; `gridlock-server`
+exists only on this machine, which is part of why its module path went unnoticed for so
+long.
+
+So `github.com/Busness-app/gridlock-server` is a path to something that is not there yet.
+The rename is still right — the module should declare where it belongs, and `go build`
+and `go test` never resolve a main module's own path over the network, so nothing breaks
+locally. But until the repo exists, nothing else can import it.
+
+**Ask the human before creating it.** Creating or pushing a repository is an outward-facing
+action and the name is theirs. Record the answer either way — a repo that exists on one
+laptop is a bus factor, not a design.
 
 - [ ] **Step 6: Commit**
 
@@ -136,10 +152,10 @@ cd /home/yoshi/busness.app/kysignon-server
 go test -race -count=1 ./... 2>&1 | tee /tmp/kysignon-before.txt
 grep -rl "github.com/Yoshiofthewire/kysignon-server" . | sort > /tmp/kysignon-refs.txt
 xargs -a /tmp/kysignon-refs.txt \
-  sed -i 's|github.com/Yoshiofthewire/kysignon-server|github.com/busness-app/kysignon-server|g'
+  sed -i 's|github.com/Yoshiofthewire/kysignon-server|github.com/Busness-app/kysignon-server|g'
 grep -rn "Yoshiofthewire" . ; echo "exit=$?"
 go mod tidy && gofmt -l . && go vet ./... && go test -race -count=1 ./...
-git add -A && git commit -m "refactor: move module path to github.com/busness-app"
+git add -A && git commit -m "refactor: move module path to github.com/Busness-app"
 ```
 
 Expected from the `grep`: no output, `exit=1`.
@@ -151,10 +167,10 @@ cd /home/yoshi/busness.app/ky_server_base
 go test -race -count=1 ./... 2>&1 | tee /tmp/base-before.txt
 grep -rl "github.com/Yoshiofthewire/ky_server_base" . | sort > /tmp/base-refs.txt
 xargs -a /tmp/base-refs.txt \
-  sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/busness-app/ky_server_base|g'
+  sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/Busness-app/ky_server_base|g'
 grep -rn "Yoshiofthewire" . ; echo "exit=$?"
 go mod tidy && gofmt -l . && go vet ./... && go test -race -count=1 ./...
-git add -A && git commit -m "refactor: move module path to github.com/busness-app"
+git add -A && git commit -m "refactor: move module path to github.com/Busness-app"
 ```
 
 **`grep -rn "Yoshiofthewire"` will still match inside `docs/`** — the plans and the Shamir findings quote the old paths when describing what the state used to be. Those are history and should stay accurate. Restrict the check to code if that is noisy:
@@ -170,11 +186,11 @@ head -1 /home/yoshi/busness.app/kysignon-server/go.mod
 head -1 /home/yoshi/busness.app/ky_server_base/go.mod
 ```
 
-Both must read `module github.com/busness-app/<name>`.
+Both must read `module github.com/Busness-app/<name>`.
 
 ---
 
-## Task 3: Rename the two lowercase-org repos
+## Task 3: Rename the two repos on the lowercased old org
 
 **Files:**
 - Modify: `kydns-server`, `kynotes-server` — `go.mod` and every importing file
@@ -188,10 +204,10 @@ for r in kydns-server kynotes-server; do
   go test -race -count=1 ./... > "/tmp/$r-before.txt" 2>&1
   grep -rl "github.com/yoshiofthewire/$r" . | sort > "/tmp/$r-refs.txt"
   xargs -a "/tmp/$r-refs.txt" \
-    sed -i "s|github.com/yoshiofthewire/$r|github.com/busness-app/$r|g"
+    sed -i "s|github.com/yoshiofthewire/$r|github.com/Busness-app/$r|g"
   go mod tidy
   gofmt -l . && go vet ./... && go test -race -count=1 ./...
-  git add -A && git commit -m "refactor: move module path to github.com/busness-app"
+  git add -A && git commit -m "refactor: move module path to github.com/Busness-app"
 done
 ```
 
@@ -231,11 +247,11 @@ for r in kyrecovery-server kypassword-server kybookmarks-server; do
   go test -race -count=1 ./... > "/tmp/$r-before.txt" 2>&1
   # The bare name appears in import strings and in go.mod's module line. Anchor on
   # the quote and the module keyword so prose and file paths are left alone.
-  grep -rl "\"$r/" --include='*.go' . | xargs -r sed -i "s|\"$r/|\"github.com/busness-app/$r/|g"
-  sed -i "1s|^module $r$|module github.com/busness-app/$r|" go.mod
+  grep -rl "\"$r/" --include='*.go' . | xargs -r sed -i "s|\"$r/|\"github.com/Busness-app/$r/|g"
+  sed -i "1s|^module $r$|module github.com/Busness-app/$r|" go.mod
   go mod tidy
   gofmt -l . && go vet ./... && go test -race -count=1 ./...
-  git add -A && git commit -m "refactor: give the module an importable path under github.com/busness-app
+  git add -A && git commit -m "refactor: give the module an importable path under github.com/Busness-app
 
 A bare module path consumes dependencies fine but cannot be imported by
 anything, which blocks this repo from sharing primitives with the suite."
@@ -258,7 +274,7 @@ done
 
 ## Task 5: Prove the suite is consistent
 
-- [ ] **Step 1: Every module declares its own busness-app path**
+- [ ] **Step 1: Every module declares its own Busness-app path**
 
 ```bash
 cd /home/yoshi/busness.app
@@ -268,14 +284,14 @@ for d in */; do r=${d%/}; [ -f "$r/go.mod" ] && printf '%-22s %s\n' "$r" "$(head
 Expected, exactly:
 
 ```
-gridlock-server        github.com/busness-app/gridlock-server
-kybookmarks-server     github.com/busness-app/kybookmarks-server
-kydns-server           github.com/busness-app/kydns-server
-kynotes-server         github.com/busness-app/kynotes-server
-kypassword-server      github.com/busness-app/kypassword-server
-kyrecovery-server      github.com/busness-app/kyrecovery-server
-ky_server_base         github.com/busness-app/ky_server_base
-kysignon-server        github.com/busness-app/kysignon-server
+gridlock-server        github.com/Busness-app/gridlock-server
+kybookmarks-server     github.com/Busness-app/kybookmarks-server
+kydns-server           github.com/Busness-app/kydns-server
+kynotes-server         github.com/Busness-app/kynotes-server
+kypassword-server      github.com/Busness-app/kypassword-server
+kyrecovery-server      github.com/Busness-app/kyrecovery-server
+ky_server_base         github.com/Busness-app/ky_server_base
+kysignon-server        github.com/Busness-app/kysignon-server
 ```
 
 - [ ] **Step 2: No old path survives in code**
