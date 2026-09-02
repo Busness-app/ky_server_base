@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/config"
 )
 
 // KyRecoveryClient implements the Zero-Code Pairing & Push client contract.

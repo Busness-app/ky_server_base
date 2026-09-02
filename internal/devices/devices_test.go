@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/devices"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
-	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
+	"github.com/Busness-app/ky_server_base/internal/devices"
+	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/testdb"
 )
 
 func TestPairingLifecycle(t *testing.T) {

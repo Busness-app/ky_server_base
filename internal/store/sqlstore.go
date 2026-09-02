@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/store/migrations"
+	"github.com/Busness-app/ky_server_base/internal/store/migrations"
 )
 
 // SQLStore implements Store on top of database/sql.

@@ -3,8 +3,8 @@ package sso
 import (
 	"context"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/store"
 )
 
 type GenericOIDCClient struct {

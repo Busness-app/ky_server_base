@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
-	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
+	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/testdb"
 	"github.com/google/uuid"
 )
 

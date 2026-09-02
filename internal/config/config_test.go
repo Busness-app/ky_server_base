@@ -3,7 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/config"
 )
 
 func TestConfigLoadDefaults(t *testing.T) {

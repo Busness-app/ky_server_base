@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
+	"github.com/Busness-app/ky_server_base/internal/auth"
 )
 
 func TestTOTPGenerationAndValidation(t *testing.T) {
