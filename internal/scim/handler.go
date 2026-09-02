@@ -13,9 +13,9 @@ import (
 	"github.com/elimity-com/scim/optional"
 	"github.com/elimity-com/scim/schema"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
-	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
+	"github.com/Busness-app/ky_server_base/internal/store"
 )
 
 type Server struct {

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/backup"
-	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
+	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
 	_ "modernc.org/sqlite"
 )
 

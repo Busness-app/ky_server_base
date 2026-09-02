@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/backup"
+	"github.com/Busness-app/ky_server_base/internal/backup"
 )
 
 // The suite carries more than one Shamir implementation behind an identical API.

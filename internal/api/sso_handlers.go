@@ -5,8 +5,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
+	"github.com/Busness-app/ky_server_base/internal/store"
 	"golang.org/x/oauth2"
 )
 

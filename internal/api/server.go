@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
-	"github.com/Yoshiofthewire/ky_server_base/internal/backup"
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
-	"github.com/Yoshiofthewire/ky_server_base/internal/devices"
-	"github.com/Yoshiofthewire/ky_server_base/internal/scim"
-	"github.com/Yoshiofthewire/ky_server_base/internal/sso"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
-	"github.com/Yoshiofthewire/ky_server_base/web"
+	"github.com/Busness-app/ky_server_base/internal/auth"
+	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/devices"
+	"github.com/Busness-app/ky_server_base/internal/scim"
+	"github.com/Busness-app/ky_server_base/internal/sso"
+	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/web"
 )
 
 type Server struct {

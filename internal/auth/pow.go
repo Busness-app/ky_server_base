@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
 )
 
 // PoWChallenge represents a client-side SHA256 puzzle matching the KySecurity standard.

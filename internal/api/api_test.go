@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky_server_base/internal/api"
-	"github.com/Yoshiofthewire/ky_server_base/internal/auth"
-	"github.com/Yoshiofthewire/ky_server_base/internal/config"
-	"github.com/Yoshiofthewire/ky_server_base/internal/crypto"
-	"github.com/Yoshiofthewire/ky_server_base/internal/store"
-	"github.com/Yoshiofthewire/ky_server_base/internal/testdb"
+	"github.com/Busness-app/ky_server_base/internal/api"
+	"github.com/Busness-app/ky_server_base/internal/auth"
+	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
+	"github.com/Busness-app/ky_server_base/internal/store"
+	"github.com/Busness-app/ky_server_base/internal/testdb"
 )
 
 func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
