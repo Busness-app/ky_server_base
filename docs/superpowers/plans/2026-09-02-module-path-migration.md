@@ -56,7 +56,7 @@ Three repos declare a module path with no domain (`kyrecovery-server`, `kypasswo
 
 This repo goes first because it is the only one whose current path is actively wrong rather than merely stale: it claims `github.com/Yoshiofthewire/ky_server_base`, the scaffold's path. Two repositories, one module identity.
 
-- [ ] **Step 1: Record the starting state**
+- [x] **Step 1: Record the starting state**
 
 ```bash
 cd /home/yoshi/busness.app/gridlock-server
@@ -67,14 +67,14 @@ wc -l /tmp/gridlock-refs.txt
 
 Expected: 34 paths — 32 Go files, `go.mod`, `scripts/ky-init.sh`.
 
-- [ ] **Step 2: Rewrite the path**
+- [x] **Step 2: Rewrite the path**
 
 ```bash
 xargs -a /tmp/gridlock-refs.txt \
   sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/Busness-app/gridlock-server|g'
 ```
 
-- [ ] **Step 3: Verify nothing was missed and nothing else changed**
+- [x] **Step 3: Verify nothing was missed and nothing else changed**
 
 ```bash
 grep -rn "Yoshiofthewire" . ; echo "exit=$?"
@@ -88,7 +88,7 @@ git diff | grep -E "^[-+]" | grep -vE "Busness-app|Yoshiofthewire" | grep -vE "^
 
 Must print nothing. **Any line it prints is a change the rename should not have made.**
 
-- [ ] **Step 4: Verify build and tests are unchanged**
+- [x] **Step 4: Verify build and tests are unchanged**
 
 ```bash
 go mod tidy
@@ -99,7 +99,7 @@ diff <(sed 's|Yoshiofthewire/ky_server_base|MODULE|g' /tmp/gridlock-before.txt) 
 
 Only timing should differ.
 
-- [ ] **Step 5: This repo has no `origin`**
+- [ ] **Step 5: This repo has no `origin`** — OPEN, needs a human
 
 ```bash
 git -C /home/yoshi/busness.app/gridlock-server remote -v
@@ -124,7 +124,7 @@ locally. But until the repo exists, nothing else can import it.
 action and the name is theirs. Record the answer either way — a repo that exists on one
 laptop is a bus factor, not a design.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -145,7 +145,7 @@ behaviour change."
 
 These two only change organisation and case.
 
-- [ ] **Step 1: Rename `kysignon-server`**
+- [x] **Step 1: Rename `kysignon-server`**
 
 ```bash
 cd /home/yoshi/busness.app/kysignon-server
@@ -160,7 +160,7 @@ git add -A && git commit -m "refactor: move module path to github.com/Busness-ap
 
 Expected from the `grep`: no output, `exit=1`.
 
-- [ ] **Step 2: Rename `ky_server_base`**
+- [x] **Step 2: Rename `ky_server_base`**
 
 ```bash
 cd /home/yoshi/busness.app/ky_server_base
@@ -179,7 +179,7 @@ git add -A && git commit -m "refactor: move module path to github.com/Busness-ap
 grep -rn "Yoshiofthewire" --include='*.go' --include='go.mod' --include='*.sh' .
 ```
 
-- [ ] **Step 3: Confirm both**
+- [x] **Step 3: Confirm both**
 
 ```bash
 head -1 /home/yoshi/busness.app/kysignon-server/go.mod
@@ -195,7 +195,7 @@ Both must read `module github.com/Busness-app/<name>`.
 **Files:**
 - Modify: `kydns-server`, `kynotes-server` — `go.mod` and every importing file
 
-- [ ] **Step 1: Rename each**
+- [x] **Step 1: Rename each**
 
 ```bash
 cd /home/yoshi/busness.app
@@ -211,7 +211,7 @@ for r in kydns-server kynotes-server; do
 done
 ```
 
-- [ ] **Step 2: Confirm neither casing survives**
+- [x] **Step 2: Confirm neither casing survives**
 
 ```bash
 cd /home/yoshi/busness.app
@@ -230,7 +230,7 @@ Expected: no output, `exit=1`.
 
 These are the ones that cannot currently be imported at all, and all three are in the audit chain plan.
 
-- [ ] **Step 1: Find how each refers to itself**
+- [x] **Step 1: Find how each refers to itself**
 
 A bare module path means internal imports look like `kyrecovery-server/internal/audit` with no domain. Confirm the shape before rewriting:
 
@@ -239,7 +239,7 @@ cd /home/yoshi/busness.app/kyrecovery-server
 grep -rho '"kyrecovery-server/[a-z/]*"' --include='*.go' . | sort -u | head
 ```
 
-- [ ] **Step 2: Rename each**
+- [x] **Step 2: Rename each**
 
 ```bash
 for r in kyrecovery-server kypassword-server kybookmarks-server; do
@@ -260,7 +260,7 @@ done
 
 **Read the `sed` before running it.** Anchoring on `"<name>/` catches import strings and misses prose, but a repo that imports itself in some other shape — a `replace` directive, a build tag, a code generator's output — will not be caught. Step 3 is what proves it.
 
-- [ ] **Step 3: Confirm each builds and declares the right path**
+- [x] **Step 3: Confirm each builds and declares the right path**
 
 ```bash
 cd /home/yoshi/busness.app
@@ -274,7 +274,7 @@ done
 
 ## Task 5: Prove the suite is consistent
 
-- [ ] **Step 1: Every module declares its own Busness-app path**
+- [x] **Step 1: Every module declares its own Busness-app path**
 
 ```bash
 cd /home/yoshi/busness.app
@@ -294,7 +294,7 @@ ky_server_base         github.com/Busness-app/ky_server_base
 kysignon-server        github.com/Busness-app/kysignon-server
 ```
 
-- [ ] **Step 2: No old path survives in code**
+- [x] **Step 2: No old path survives in code**
 
 ```bash
 grep -rn "Yoshiofthewire\|yoshiofthewire" */. --include='*.go' --include='go.mod' --include='go.sum' --include='*.sh'
@@ -303,7 +303,7 @@ echo "exit=$?"
 
 Expected: no output, `exit=1`. Matches inside `docs/` are history and are fine.
 
-- [ ] **Step 3: Every module path matches its remote**
+- [x] **Step 3: Every module path matches its remote**
 
 ```bash
 for d in */; do r=${d%/}; [ -f "$r/go.mod" ] || continue
@@ -322,3 +322,71 @@ The org in each `go.mod` must match the org in each `origin`. `gridlock-server` 
 - **It does not rename any GitHub repository or create any remote.** Only Go module paths. `gridlock-server` having no remote is raised in Task 1 Step 5 as a question for the human, not an action.
 - **It does not change behaviour anywhere.** Every commit here is a pure rename, and each has a verification step that fails if the diff contains anything else.
 - **It does not touch the client repos.** `kypost-Linux`, `kypost-for-Mac`, `kyauth-android` and the rest are not Go modules and have no module path to migrate.
+
+---
+
+## Outcome — executed 2026-09-02
+
+All eight repos renamed, each on a `refactor/module-path` branch, none pushed or merged.
+Every repo: `go vet` clean, tests pass, test output identical to before once the module
+name is normalised.
+
+| Repo | Commit | Files |
+|---|---|---|
+| `gridlock-server` | `1ffd79a` | 34 |
+| `kysignon-server` | `b476a70` | 40 |
+| `ky_server_base` | `07e2c39` | 29 |
+| `kydns-server` | `01347b8` | 138 |
+| `kynotes-server` | `6bda237` | 35 |
+| `kyrecovery-server` | `d997c77` | 51 |
+| `kypassword-server` | `1757fcc` | 13 |
+| `kybookmarks-server` | `a865448` | 11 |
+
+### Five things the plan did not anticipate
+
+**1. `scripts/ky-init.sh` mints new products on the old org.** Both the scaffold and
+gridlock carry it, and it builds a new product's path from a hardcoded
+`MODULE_NEW="github.com/Yoshiofthewire/${APP_NAME}"`. Renaming the repo would not have
+touched it, because it never contains the literal old module path — only the org prefix
+plus a variable. Every product scaffolded after the rename would have been born on the old
+organisation. Fixed in both.
+
+**2. A capital first letter reorders import blocks.** `Busness-app` sorts before lowercase
+paths where `yoshiofthewire` sorted after, so gofmt regroups. Twelve files in
+`kydns-server` and four in `kyrecovery-server` needed `gofmt -w`; the diff is import
+ordering only. `kydns-server` was gofmt-clean before, so this was caused by the rename,
+not pre-existing.
+
+**3. Bare `owner/repo` references are invisible to a `github.com/` search.**
+`kydns-server`'s README told users to run
+`gh attestation verify --repo yoshiofthewire/kydns-server`, which cannot verify an artifact
+built under a different owner, and its CI pushed images to `ghcr.io/yoshiofthewire`. The
+residual `grep` for the bare owner name is what caught both — searching only for
+`github.com/<org>/` would have missed them.
+
+**4. GHCR must be lowercase even though the module path is not.** OCI registries reject a
+mixed-case repository name, so the image namespace is `ghcr.io/busness-app/kydns-server`
+while the module is `github.com/Busness-app/kydns-server`. The workflow's own comment
+already said so. **This changes where images publish** and needs the org's package
+permissions to allow it — worth confirming before that workflow next runs.
+
+**5. Three security policies pointed at the wrong repository.** `kysignon-server`,
+`kypassword-server` and `kybookmarks-server` all sent vulnerability reports to
+`https://github.com/Yoshiofthewire/kypost-server/security/advisories` — a different
+product, on an organisation that no longer hosts the code. Copied from a KyPost-derived
+template and never repointed. `kynotes-server` had the right repo on the wrong org. Fixed
+in all four, as separate commits from the renames.
+
+### Left open
+
+- **`gridlock-server` still has no remote and does not exist on GitHub.** Its module now
+  declares `github.com/Busness-app/gridlock-server`, which builds and tests fine locally
+  because a main module's own path is never resolved over the network — but nothing can
+  import it until the repository exists. Task 1 Step 5 stays unticked.
+- **`gridlock-server` has 4 pre-existing gofmt-unformatted files** — `internal/backup/client.go`,
+  `internal/scim/handler.go`, `internal/scim/types.go`, `internal/store/models.go`.
+  Confirmed present on `master` before the rename, so they are not from this work, but they
+  mean that repo does not currently meet the suite's own `gofmt -l .` gate.
+- Historical plans and hand-off reports under each repo's `docs/` keep the old paths, as
+  the record of what was true when they were written. `.github/FUNDING.yml` keeps the
+  `yoshiofthewire` handle: a personal funding account is not an organisation path.

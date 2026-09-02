@@ -11,7 +11,7 @@ stays in the parent plan. Everything here is the other repos.
 
 | Plan | Repos | Blocked by |
 |---|---|---|
-| [Module path migration](2026-09-02-module-path-migration.md) | all eight Go repos | nothing |
+| [Module path migration](2026-09-02-module-path-migration.md) — **DONE 2026-09-02** | all eight Go repos | — |
 | [Capsule format interop](2026-09-02-capsule-format-interop.md) | shared gate | `ky-primitives` exists |
 | [kysignon-server migration](2026-09-02-kysignon-server-migration.md) | `kysignon-server` | capsule gate, for its Task 3 only |
 | [gridlock-server migration](2026-09-02-gridlock-server-migration.md) | `gridlock-server` | capsule gate, for its Task 3 only |
@@ -27,14 +27,13 @@ Inside it, each repo's tasks are still independently executable and revertible.
 
 ## Sequencing
 
-**First, and blocking almost everything:** the module path migration. The suite moved to
-`github.com/Busness-app/` and no `go.mod` followed. `ky-primitives` cannot be tagged until
-its path is settled, three repos cannot be imported at all until they have a domain, and
-`gridlock-server` still claims the scaffold's identity. It is eight pure renames with no
-behaviour change.
+**~~First, and blocking almost everything:~~ Done.** The module path migration ran on
+2026-09-02: all eight repos renamed onto `github.com/Busness-app/`, each on a
+`refactor/module-path` branch, none pushed or merged. See that plan's Outcome section for
+the five things it turned up that were not in the plan.
 
-**In parallel, no dependencies:** the pairing spec plan. It is documentation only and
-touches no module path.
+**Next, no dependencies:** the pairing spec plan. It is documentation only and touches no
+module path.
 
 **Then, once `ky-primitives` exists** (parent plan Task 2): the capsule gate, and the
 Shamir halves of the two migration plans, which can run in parallel — they are separate
