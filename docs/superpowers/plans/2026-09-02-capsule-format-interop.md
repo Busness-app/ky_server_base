@@ -15,7 +15,7 @@
 - **No behaviour change to any capsule that already exists on disk. Existing backups must still restore.** Copied verbatim from the parent plan; this plan exists because that constraint is at risk.
 - The shared module has **zero dependencies**. Standard library only, forever.
 - Every consuming repo keeps its gates green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Yoshiofthewire/`, **not** `github.com/Busness-app/` as the parent plan states. See [the Shamir findings](../../shamir-interop-findings.md).
+- Module path prefix is `github.com/busness-app/`, lowercase. See [the module path migration plan](2026-09-02-module-path-migration.md).
 
 ---
 
@@ -349,7 +349,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Yoshiofthewire/ky-primitives/capsule"
+	"github.com/busness-app/ky-primitives/capsule"
 )
 
 // One real capsule from each implementation the suite has shipped. If any of

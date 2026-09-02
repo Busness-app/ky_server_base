@@ -15,7 +15,7 @@
 - **The new shared module has zero dependencies.** Standard library only, forever. It is importable by `kysignon-server`, whose entire architecture argument rests on having three direct dependencies; a module that drags in anything else is unusable there and the plan fails.
 - Every consuming repo keeps its own gates green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`, `govulncheck ./...`.
 - **No behaviour change to any capsule, kit or audit record that already exists on disk.** Existing backups must still restore. Any change that cannot preserve that is out of scope and must be reported, not worked around.
-- Module path and repo naming follow the existing convention (`github.com/Busness-app/<name>`).
+- Module path and repo naming follow the existing convention (`github.com/busness-app/<name>`, lowercase — see the amendment under Task 2).
 
 ---
 
@@ -145,8 +145,16 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 
 ## Task 2: Create the `ky-primitives` module
 
+> **Amended 2026-09-02:** the module path here read `github.com/Busness-app/ky-primitives`
+> with a capital B. Go module paths are case-sensitive — an uppercase letter is escaped as
+> `!b` on the proxy and in the module cache — so that path and the lowercase one are two
+> different modules, and the per-repo plans all import lowercase. Unified to
+> `github.com/busness-app/`. See
+> [the module path migration plan](2026-09-02-module-path-migration.md); if the capital is
+> the intended form, change it there and here together, before v0.1.0 is tagged.
+
 **Files:**
-- Create: a new repository `github.com/Busness-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
+- Create: a new repository `github.com/busness-app/ky-primitives` with `go.mod`, `shamir/`, `capsule/`, `auditchain/`, `testdata/`
 - Depends on: Task 1's verdict and vectors
 
 **Interfaces produced:**
@@ -157,7 +165,7 @@ git commit -m "docs: establish Shamir interoperability across suite implementati
 - [ ] **Step 1: Initialise with an empty require block**
 
 ```
-module github.com/Busness-app/ky-primitives
+module github.com/busness-app/ky-primitives
 
 go 1.26
 ```
@@ -209,7 +217,7 @@ Do this repo first: it has the most demanding dependency constraint, the most va
 - [ ] **Step 1: Add the dependency and check the cost**
 
 ```bash
-go get github.com/Busness-app/ky-primitives@v0.1.0
+go get github.com/busness-app/ky-primitives@v0.1.0
 go mod tidy
 ```
 

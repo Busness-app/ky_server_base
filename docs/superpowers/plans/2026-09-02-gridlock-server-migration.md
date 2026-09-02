@@ -4,7 +4,7 @@
 
 **Goal:** Give `gridlock-server` its own module identity, then move it onto the suite's shared backup primitives without breaking any capsule it has already written.
 
-**Architecture:** `gridlock-server` is a copy of the scaffold whose module was never renamed — it currently declares and imports `github.com/Yoshiofthewire/ky_server_base`. The rename must land first and alone, because it touches every file and would otherwise drown the migration diff. The primitives migration then follows the same shape as every other repo's.
+**Architecture:** `gridlock-server` is a copy of the scaffold whose module was never renamed. That rename lands first, in its own plan, because it touches every file and would otherwise drown this diff. The primitives migration then follows the same shape as every other repo's.
 
 **Tech Stack:** Go 1.26+, standard library plus the repo's existing dependencies.
 
@@ -14,7 +14,7 @@
 
 - **No behaviour change to any capsule that already exists on disk.**
 - Gates stay green: `gofmt -l .` empty, `go vet ./...`, `go test -race ./...`.
-- Module path prefix is `github.com/Yoshiofthewire/`.
+- Module path prefix is `github.com/busness-app/`.
 - `ky-primitives` has zero dependencies; adding it must add **no new indirect entries** to this repo's `go.mod`.
 
 ---
@@ -43,75 +43,29 @@ module github.com/Yoshiofthewire/ky_server_base
 
 Every one of its **32 Go files** imports internal packages under that prefix, and `scripts/ky-init.sh` references it too. Two repositories currently claim one module path. `go get github.com/Yoshiofthewire/ky_server_base` is ambiguous between them, and any tool resolving that path may get either repo's code.
 
-Migrating this repo without renaming it first would add `ky-primitives` to a module that is pretending to be a different module.
+Migrating this repo without renaming it first would add `ky-primitives` to a module that is pretending to be a different module. The rename is Task 1 of [the module path migration plan](2026-09-02-module-path-migration.md).
 
 ---
 
-## Task 1: Give gridlock-server its own module path
+## Task 1: The module rename — covered elsewhere
 
-**Files:**
-- Modify: `go.mod` line 1
-- Modify: all 32 `.go` files importing `github.com/Yoshiofthewire/ky_server_base`
-- Modify: `scripts/ky-init.sh`
+`gridlock-server` declares `module github.com/Yoshiofthewire/ky_server_base` and 32 of its
+Go files import under that prefix. That rename is **Task 1 of
+[the module path migration plan](2026-09-02-module-path-migration.md)**, which renames all
+eight Go repos to `github.com/busness-app/<name>` in one coordinated pass.
 
-This task changes no behaviour. It is a pure rename, and it should be reviewed as one — a rename with a logic change buried in it is unreviewable.
+**Do not do it here.** Two plans renaming the same repo is how `gridlock-server` came to
+claim the scaffold's path in the first place. This plan assumes the rename has landed and
+that this repo is `github.com/busness-app/gridlock-server`.
 
-- [ ] **Step 1: Record the starting state so the rename can be checked**
-
-```bash
-cd /home/yoshi/busness.app/gridlock-server
-go test -race -count=1 ./... 2>&1 | tee /tmp/gridlock-before.txt
-grep -rl "github.com/Yoshiofthewire/ky_server_base" . | sort > /tmp/gridlock-refs.txt
-wc -l /tmp/gridlock-refs.txt
-```
-
-Expected: 34 paths — 32 Go files, `go.mod`, `scripts/ky-init.sh`.
-
-- [ ] **Step 2: Rewrite the module path everywhere**
+Verify before starting Task 2:
 
 ```bash
-cd /home/yoshi/busness.app/gridlock-server
-xargs -a /tmp/gridlock-refs.txt \
-  sed -i 's|github.com/Yoshiofthewire/ky_server_base|github.com/Yoshiofthewire/gridlock-server|g'
+head -1 /home/yoshi/busness.app/gridlock-server/go.mod
 ```
 
-- [ ] **Step 3: Verify nothing was missed and nothing else changed**
-
-```bash
-grep -rn "Yoshiofthewire/ky_server_base" . ; echo "exit=$?"
-```
-
-Expected: no output, `exit=1`. A match here means a reference outside the list from Step 1 — find it before continuing.
-
-```bash
-git diff --stat
-git diff | grep -E "^[-+]" | grep -v "Yoshiofthewire" | grep -vE "^(---|\+\+\+)"
-```
-
-The second command must print nothing. **Any line it prints is a change the rename should not have made** — investigate rather than accepting it.
-
-- [ ] **Step 4: Verify the build and tests are unchanged**
-
-```bash
-go mod tidy
-gofmt -l . && go vet ./... && go test -race -count=1 ./... 2>&1 | tee /tmp/gridlock-after.txt
-diff <(sed 's|ky_server_base|MODULE|g' /tmp/gridlock-before.txt) \
-     <(sed 's|gridlock-server|MODULE|g' /tmp/gridlock-after.txt)
-```
-
-The diff should show only timing differences. A test that passed before and fails now means the rename was not pure.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add -A
-git commit -m "refactor: claim gridlock-server's own module path
-
-This repo was copied from ky_server_base and its go.mod was never
-renamed, so two repositories declared one module identity and every
-internal import resolved under the scaffold's path. Pure rename: no
-behaviour change."
-```
+Expected: `module github.com/busness-app/gridlock-server`. If it still reads
+`github.com/Yoshiofthewire/ky_server_base`, stop and run the module path migration first.
 
 ---
 
@@ -137,7 +91,7 @@ Shamir is the safe half of this migration: [the interop findings](../../shamir-i
 mkdir -p testdata
 cp /home/yoshi/busness.app/ky_server_base/testdata/shamir-vectors.json testdata/
 cp /home/yoshi/busness.app/ky_server_base/internal/backup/shamir_vectors_test.go internal/backup/
-sed -i 's|github.com/Yoshiofthewire/ky_server_base/internal/backup|github.com/Yoshiofthewire/gridlock-server/internal/backup|' \
+sed -i 's|github.com/busness-app/ky_server_base/internal/backup|github.com/busness-app/gridlock-server/internal/backup|' \
   internal/backup/shamir_vectors_test.go
 go test -race -count=1 -run TestShamirGoldenVectors ./internal/backup/...
 ```
@@ -148,7 +102,7 @@ Expected: PASS, **before** anything is replaced. This proves the vectors describ
 
 ```bash
 go list -m all | wc -l > /tmp/gridlock-modcount-before.txt
-go get github.com/Yoshiofthewire/ky-primitives@v0.1.0
+go get github.com/busness-app/ky-primitives@v0.1.0
 go mod tidy
 go list -m all | wc -l
 ```
@@ -163,7 +117,7 @@ Replace the body of `internal/backup/shamir.go` with delegation. `SplitSecret` a
 package backup
 
 import (
-	"github.com/Yoshiofthewire/ky-primitives/shamir"
+	"github.com/busness-app/ky-primitives/shamir"
 )
 
 // Share is one custodian's key shard in a (k, n) threshold scheme.

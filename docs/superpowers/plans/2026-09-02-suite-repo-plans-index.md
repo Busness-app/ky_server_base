@@ -11,6 +11,7 @@ stays in the parent plan. Everything here is the other repos.
 
 | Plan | Repos | Blocked by |
 |---|---|---|
+| [Module path migration](2026-09-02-module-path-migration.md) | all eight Go repos | nothing |
 | [Capsule format interop](2026-09-02-capsule-format-interop.md) | shared gate | `ky-primitives` exists |
 | [kysignon-server migration](2026-09-02-kysignon-server-migration.md) | `kysignon-server` | capsule gate, for its Task 3 only |
 | [gridlock-server migration](2026-09-02-gridlock-server-migration.md) | `gridlock-server` | capsule gate, for its Task 3 only |
@@ -26,17 +27,18 @@ Inside it, each repo's tasks are still independently executable and revertible.
 
 ## Sequencing
 
-**Start now, no dependencies:** the pairing spec plan. It is documentation, it touches
-every repo, and it is the only plan here that is not waiting on `ky-primitives`.
+**First, and blocking almost everything:** the module path migration. The suite moved to
+`github.com/busness-app/` and no `go.mod` followed. `ky-primitives` cannot be tagged until
+its path is settled, three repos cannot be imported at all until they have a domain, and
+`gridlock-server` still claims the scaffold's identity. It is eight pure renames with no
+behaviour change.
+
+**In parallel, no dependencies:** the pairing spec plan. It is documentation only and
+touches no module path.
 
 **Then, once `ky-primitives` exists** (parent plan Task 2): the capsule gate, and the
 Shamir halves of the two migration plans, which can run in parallel — they are separate
 repositories with no shared state.
-
-**gridlock-server's module rename is its own prerequisite.** That repo declares
-`module github.com/Yoshiofthewire/ky_server_base` and 32 of its Go files import under
-that prefix. The rename must land alone, before anything else touches the repo, or every
-later diff is buried in it.
 
 **Last:** the capsule halves of both migrations, gated on the shared package opening all
 three products' capsules.
@@ -61,27 +63,36 @@ checked. The corrections, with what proved each:
   up.
 - **The pairing spec drift is not purely additive**, which trips the parent plan's
   escalation gate — but the server's own code resolves it without a human decision.
-- **The module prefix is `github.com/Yoshiofthewire/`, not `github.com/Busness-app/`**,
-  and four different conventions are in use across the suite. See below.
+- **No `go.mod` followed the move to `github.com/busness-app/`.** Four conventions are in
+  use, including one repo claiming another's identity. See below.
 
-## An unresolved question: module paths
+## The module path question is now answered
 
-Not planned here, because it needs a decision rather than an implementation. The suite
-currently uses four conventions:
+The suite has moved to `github.com/busness-app/`. The remotes went; the module paths did
+not:
 
 ```
-github.com/Yoshiofthewire/ky_server_base       ky_server_base
-github.com/Yoshiofthewire/ky_server_base       gridlock-server   <- collision
-github.com/Yoshiofthewire/kysignon-server      kysignon-server
-github.com/yoshiofthewire/kydns-server         kydns-server      <- lowercase
-github.com/yoshiofthewire/kynotes-server       kynotes-server    <- lowercase
-kybookmarks-server                             kybookmarks-server <- no domain
-kypassword-server                              kypassword-server  <- no domain
-kyrecovery-server                              kyrecovery-server  <- no domain
+go.mod says                                    origin says
+github.com/Yoshiofthewire/ky_server_base       Busness-app/ky_server_base
+github.com/Yoshiofthewire/ky_server_base       (no origin)          <- gridlock-server
+github.com/Yoshiofthewire/kysignon-server      Busness-app/kysignon-server
+github.com/yoshiofthewire/kydns-server         Busness-app/kydns-server
+github.com/yoshiofthewire/kynotes-server       Busness-app/kynotes-server
+kybookmarks-server                             Busness-app/kybookmarks-server
+kypassword-server                              Busness-app/kypassword-server
+kyrecovery-server                              Busness-app/kyrecovery-server
 ```
 
-The gridlock collision is planned, because it blocks that repo's migration. The rest is
-not urgent: a bare module path still consumes external modules fine, it only prevents the
-repo from being imported. But `ky-primitives` is about to be imported by several of these,
-and picking its path means picking the convention. **Worth deciding before the parent
-plan's Task 2 tags v0.1.0.**
+[The module path migration plan](2026-09-02-module-path-migration.md) fixes all eight.
+
+**One thing to confirm: the case.** These plans use `github.com/busness-app/` in lowercase,
+as written in the instruction to make the move. The GitHub remotes render as
+`Busness-app`. GitHub does not care, but **Go module paths are case-sensitive** — an
+uppercase letter is escaped as `!b` in the module cache and on the proxy, so
+`github.com/busness-app/x` and `github.com/Busness-app/x` are two different modules to the
+toolchain. The suite already has this exact inconsistency today, with `yoshiofthewire`
+and `Yoshiofthewire` both in use.
+
+Lowercase is the safer default and is what is written throughout. Nothing is implemented
+yet, so switching is a one-line change across these plans — but it is much more expensive
+after eight repos have been renamed.

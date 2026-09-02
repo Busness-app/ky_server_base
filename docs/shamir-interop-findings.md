@@ -101,23 +101,43 @@ quorum fails cleanly rather than producing a plausible-looking restore. Worth st
 explicitly because that checksum is the only thing standing between a typo and a wrong
 key, and any future caller of `CombineShares` that skips it inherits the hazard.
 
-## Two corrections to the plan
+## Corrections to the plan
 
-**The module path convention in the plan is wrong.** The plan's Global Constraints say
-new repos follow `github.com/Busness-app/<name>`. Every module in the suite is actually
-`github.com/Yoshiofthewire/<name>`:
+**The module paths do not match the org the code lives in.**
+
+> **Superseded, 2026-09-02.** This section originally said the parent plan's
+> `github.com/Busness-app/<name>` convention "is wrong" and that the real prefix is
+> `github.com/Yoshiofthewire/`. **That was wrong.** It described `go.mod` accurately, but
+> `go.mod` was the stale artefact: the suite has moved to the `busness-app` organisation
+> and the module paths never followed. The parent plan named the destination, not the
+> current state. The canonical prefix is `github.com/busness-app/`, lowercase — see
+> [the module path migration plan](superpowers/plans/2026-09-02-module-path-migration.md).
+> The measurements below stand; only the conclusion drawn from them was wrong.
+
+Every module in the suite declares a path from before the move:
 
 ```
-github.com/Yoshiofthewire/ky_server_base
-github.com/Yoshiofthewire/kysignon-server
+github.com/Yoshiofthewire/ky_server_base       ky_server_base
+github.com/Yoshiofthewire/kysignon-server      kysignon-server
+github.com/yoshiofthewire/kydns-server         kydns-server
+github.com/yoshiofthewire/kynotes-server       kynotes-server
+kyrecovery-server                              kyrecovery-server
+kypassword-server                              kypassword-server
+kybookmarks-server                             kybookmarks-server
 ```
 
-Task 2 creates a new module and would have created it at a path nothing else uses.
+Four conventions — the old org capitalised, the old org lowercased, and three with no
+domain at all. A bare path still consumes dependencies fine, which is why it went
+unnoticed, but it cannot be imported by anything.
+
+Task 2 creates a new module that five repos will import, so its path has to be settled
+before it is tagged.
 
 **`gridlock-server` still declares the scaffold's module path.** Its `go.mod` reads
 `module github.com/Yoshiofthewire/ky_server_base`, and every internal import inside it
 resolves under that same prefix — it is a copy of the scaffold whose module was never
-renamed. Two repositories currently claim one module identity.
+renamed. Two repositories currently claim one module identity, and it is the only repo in
+the suite with no `origin` remote.
 
 This lands directly on Task 4, which migrates both together: adding `ky-primitives` to
 each is fine, but `gridlock-server` needs its module renamed first, and that rename
