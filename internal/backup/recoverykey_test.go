@@ -2,9 +2,14 @@ package backup_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/keyfile"
@@ -91,5 +96,90 @@ func TestLoadRecoveryKeyDetectsSwappedFile(t *testing.T) {
 	}
 	if _, err := backup.LoadRecoveryKey(ctx, dir, settings); !errors.Is(err, backup.ErrRecoveryKeyMismatch) {
 		t.Fatalf("got %v, want ErrRecoveryKeyMismatch", err)
+	}
+}
+
+// A swapped file must not become the pinned key just because a peer hands back the same swap.
+func TestStoreRecoveryKeyRefusesARePairToASwappedFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	settings := openSettings(t)
+	a, _ := recoverykey.Generate()
+	b, _ := recoverykey.Generate()
+	if err := backup.StoreRecoveryKey(ctx, dir, settings, backup.RecoveryKey{Public: a.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	// Attacker has the data directory but not the database.
+	if err := os.Remove(backup.RecoveryKeyPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyfile.Store(backup.RecoveryKeyPath(dir), b.Public().Bytes(), keyfile.Raw); err != nil {
+		t.Fatal(err)
+	}
+	// ...and now serves a claim for the same key B they planted.
+	err := backup.StoreRecoveryKey(ctx, dir, settings, backup.RecoveryKey{Public: b.Public(), Threshold: 2, TotalShares: 3})
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("re-pair to the planted key: got %v, want fs.ErrExist", err)
+	}
+	pinned, err := settings.GetSetting(ctx, "kyrecovery_key_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned != a.Public().ID() {
+		t.Fatalf("pin moved to %s, want %s", pinned, a.Public().ID())
+	}
+}
+
+// A pairing that died between writing the key ID and the topology is not a pairing.
+func TestLoadRecoveryKeyPartialPinIsUnpaired(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	settings := openSettings(t)
+	a, _ := recoverykey.Generate()
+	if err := keyfile.Store(backup.RecoveryKeyPath(dir), a.Public().Bytes(), keyfile.Raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.SetSetting(ctx, "kyrecovery_key_id", a.Public().ID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backup.LoadRecoveryKey(ctx, dir, settings); !errors.Is(err, backup.ErrNotPaired) {
+		t.Fatalf("got %v, want ErrNotPaired", err)
+	}
+}
+
+type claimTransport struct{ body string }
+
+func (c claimTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Header:     http.Header{},
+	}, nil
+}
+
+// A claim without a usable custodian topology is not a completed pairing, so the client
+// refuses it rather than handing the handler a result that only fails when it is stored.
+func TestClaimPairingRequiresATopology(t *testing.T) {
+	priv, _ := recoverykey.Generate()
+	pub := base64.StdEncoding.EncodeToString(priv.Public().Bytes())
+
+	body := func(threshold, total int) string {
+		return fmt.Sprintf(`{"api_token":"tok","recovery_public_key":%q,"threshold":%d,"total_shares":%d}`, pub, threshold, total)
+	}
+
+	client := backup.NewClientWithTransportForTest(claimTransport{body: body(2, 3)})
+	got, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "app")
+	if err != nil {
+		t.Fatalf("valid claim: %v", err)
+	}
+	if got.Key.Threshold != 2 || got.Key.TotalShares != 3 || got.Key.Public.ID() != priv.Public().ID() {
+		t.Fatalf("valid claim: got %+v", got)
+	}
+
+	for _, tc := range []struct{ threshold, total int }{{0, 0}, {0, 3}, {1, 3}, {4, 3}} {
+		client := backup.NewClientWithTransportForTest(claimTransport{body: body(tc.threshold, tc.total)})
+		if _, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "app"); err == nil {
+			t.Errorf("%d-of-%d: claim accepted, want an error", tc.threshold, tc.total)
+		}
 	}
 }

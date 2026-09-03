@@ -130,6 +130,9 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 	if err != nil {
 		return PairingResult{}, fmt.Errorf("recovery_public_key: %w", err)
 	}
+	if !validTopology(claimResp.Threshold, claimResp.TotalShares) {
+		return PairingResult{}, fmt.Errorf("claim response: %d-of-%d is not a custodian topology", claimResp.Threshold, claimResp.TotalShares)
+	}
 	return PairingResult{
 		APIToken: claimResp.APIToken,
 		Key:      RecoveryKey{Public: pk, Threshold: claimResp.Threshold, TotalShares: claimResp.TotalShares},
