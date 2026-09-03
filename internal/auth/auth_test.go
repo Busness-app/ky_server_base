@@ -41,23 +41,33 @@ func TestTOTPValidateReturnsCounter(t *testing.T) {
 func TestRecoveryCodes(t *testing.T) {
 	codes, hashedJSON, err := auth.GenerateRecoveryCodes(8)
 	if err != nil {
-		t.Fatalf("failed to generate recovery codes: %v", err)
+		t.Fatal(err)
 	}
-	if len(codes) != 8 {
-		t.Fatalf("expected 8 codes, got %d", len(codes))
+	if len(codes) != 8 || len(codes[0]) != 14 { // xxxx-xxxx-xxxx
+		t.Fatalf("codes %v", codes)
 	}
 
-	// Redeem first code
-	codeToRedeem := codes[0]
-	updatedJSON, ok := auth.RedeemRecoveryCode(codeToRedeem, hashedJSON)
+	// Typed in upper case without dashes: still redeems.
+	typed := strings.ToUpper(strings.ReplaceAll(codes[3], "-", ""))
+	updated, ok := auth.RedeemRecoveryCode(typed, hashedJSON)
 	if !ok {
-		t.Fatalf("failed to redeem valid code: %s", codeToRedeem)
+		t.Fatalf("normalised form of %q rejected", codes[3])
 	}
 
-	// Redeeming same code again should fail
-	_, okAgain := auth.RedeemRecoveryCode(codeToRedeem, updatedJSON)
-	if okAgain {
-		t.Errorf("expected redeemed code to fail second attempt")
+	// The slot is blanked, not removed: still 8 entries, one empty.
+	var digests []string
+	if err := json.Unmarshal([]byte(updated), &digests); err != nil {
+		t.Fatal(err)
+	}
+	if len(digests) != 8 || digests[3] != "" {
+		t.Fatalf("slot 3 not blanked in place: %v", digests)
+	}
+
+	if _, again := auth.RedeemRecoveryCode(codes[3], updated); again {
+		t.Fatal("redeemed code accepted twice")
+	}
+	if _, other := auth.RedeemRecoveryCode(codes[4], updated); !other {
+		t.Fatal("unrelated code rejected after a redemption")
 	}
 }
 
