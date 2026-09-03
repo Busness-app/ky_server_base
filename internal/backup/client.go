@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky_server_base/internal/config"
 )
 
@@ -67,13 +68,22 @@ func isPublicIP(ip net.IP) bool {
 	return ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
-// ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent API bearer token.
-func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (string, error) {
+// PairingResult is what a completed pairing yields: the bearer token for deposits and the
+// suite recovery public key with its custodian topology. A claim that returns no key is not a
+// completed pairing.
+type PairingResult struct {
+	APIToken string
+	Key      RecoveryKey
+}
+
+// ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent
+// API bearer token and the suite recovery public key to seal backups to.
+func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (PairingResult, error) {
 	serverURL = strings.TrimRight(serverURL, "/")
 	endpoint := fmt.Sprintf("%s/api/pairing/claim", serverURL)
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
-		return "", errors.New("invalid recovery URL")
+		return PairingResult{}, errors.New("invalid recovery URL")
 	}
 
 	reqBody := map[string]string{
@@ -84,34 +94,46 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return PairingResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("pairing claim request failed: %w", err)
+		return PairingResult{}, fmt.Errorf("pairing claim request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return "", fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
+		return PairingResult{}, fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
 	}
 
 	var claimResp struct {
-		APIToken string `json:"api_token"`
-		Status   string `json:"status"`
+		APIToken          string `json:"api_token"`
+		Status            string `json:"status"`
+		RecoveryPublicKey string `json:"recovery_public_key"` // std base64 of 1216 bytes
+		Threshold         int    `json:"threshold"`
+		TotalShares       int    `json:"total_shares"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&claimResp); err != nil {
-		return "", err
+		return PairingResult{}, err
 	}
-
 	if claimResp.APIToken == "" {
-		return "", errors.New("empty api_token in claim response")
+		return PairingResult{}, errors.New("empty api_token in claim response")
 	}
-
-	return claimResp.APIToken, nil
+	pkBytes, err := base64.StdEncoding.DecodeString(claimResp.RecoveryPublicKey)
+	if err != nil {
+		return PairingResult{}, fmt.Errorf("recovery_public_key: %w", err)
+	}
+	pk, err := recoverykey.ParsePublicKey(pkBytes)
+	if err != nil {
+		return PairingResult{}, fmt.Errorf("recovery_public_key: %w", err)
+	}
+	return PairingResult{
+		APIToken: claimResp.APIToken,
+		Key:      RecoveryKey{Public: pk, Threshold: claimResp.Threshold, TotalShares: claimResp.TotalShares},
+	}, nil
 }
 
 // PushBackupPayload defines the self-declaring backup ingest schema.

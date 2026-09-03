@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"net/http"
 
 	"github.com/Busness-app/ky_server_base/internal/backup"
@@ -101,23 +103,34 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	token, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName)
+	result, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "Recovery pairing failed")
 		return
 	}
 
+	if err := backup.StoreRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings(), result.Key); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			s.writeError(w, http.StatusConflict, "Already paired to a different recovery key")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery key")
+		return
+	}
 	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_url", req.RecoveryURL); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}
-	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", token); err != nil {
+	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", result.APIToken); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"paired":       true,
-		"recovery_url": req.RecoveryURL,
+		"paired":          true,
+		"recovery_url":    req.RecoveryURL,
+		"recovery_key_id": result.Key.Public.ID(),
+		"threshold":       result.Key.Threshold,
+		"total_shares":    result.Key.TotalShares,
 	})
 }

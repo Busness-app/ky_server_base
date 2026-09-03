@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/Busness-app/ky-primitives/password"
+	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky-primitives/totp"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/auth"
+	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
 	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
@@ -23,7 +25,9 @@ func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
 	t.Helper()
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	cfg, _ := config.LoadFromEnv()
-	cfg.Database = testdb.Config(t)
+	db := testdb.Config(t)
+	db.DataDir = cfg.Database.DataDir // testdb only picks the backend; keep the temp data dir
+	cfg.Database = db
 	cfg.Captcha.Provider = "none" // disable captcha for unit test speed
 
 	st, err := store.Open(context.Background(), cfg.Database)
@@ -217,5 +221,77 @@ func TestMFATOTPRefusesReplay(t *testing.T) {
 	}
 	if got := post(); got != http.StatusUnauthorized {
 		t.Fatalf("replay: got %d, want 401", got)
+	}
+}
+
+// fakePairer stands in for KyRecovery: the real client refuses non-HTTPS and private hosts,
+// so there is no way to exercise the pairing handler against a test server.
+type fakePairer struct {
+	result backup.PairingResult
+}
+
+func (f fakePairer) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (backup.PairingResult, error) {
+	return f.result, nil
+}
+
+func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public()
+	api.SetRecoveryClientForTest(srv, fakePairer{result: backup.PairingResult{
+		APIToken: "tok_pair",
+		Key:      backup.RecoveryKey{Public: pub, Threshold: 2, TotalShares: 3},
+	}})
+
+	body, _ := json.Marshal(map[string]string{
+		"recovery_url": "https://recovery.busnes.app",
+		"pairing_code": "123456",
+	})
+	req := httptest.NewRequest("POST", "/api/backup/pair-remote", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	cookie := loginAs(t, srv, st, "alice", "admin")
+	req.AddCookie(cookie)
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
+	req.Header.Set(auth.HeaderCSRF, "test-csrf")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("pair: got %d: %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["recovery_key_id"] != pub.ID() {
+		t.Errorf("recovery_key_id: got %v, want %s", out["recovery_key_id"], pub.ID())
+	}
+
+	got, err := backup.LoadRecoveryKey(context.Background(), cfg.Database.DataDir, st.Settings())
+	if err != nil {
+		t.Fatalf("load pinned key: %v", err)
+	}
+	if got.Public.ID() != pub.ID() || got.Threshold != 2 || got.TotalShares != 3 {
+		t.Errorf("pinned key: got %+v", got)
+	}
+
+	// Pairing again to a different key must not silently re-point the product.
+	other, _ := recoverykey.Generate()
+	api.SetRecoveryClientForTest(srv, fakePairer{result: backup.PairingResult{
+		APIToken: "tok_pair2",
+		Key:      backup.RecoveryKey{Public: other.Public(), Threshold: 2, TotalShares: 3},
+	}})
+	req2 := httptest.NewRequest("POST", "/api/backup/pair-remote", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.AddCookie(cookie)
+	req2.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
+	req2.Header.Set(auth.HeaderCSRF, "test-csrf")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("re-pair to a different key: got %d, want 409: %s", w2.Code, w2.Body.String())
 	}
 }

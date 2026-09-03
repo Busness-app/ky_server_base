@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -19,6 +20,12 @@ import (
 	"github.com/Busness-app/ky_server_base/web"
 )
 
+// recoveryPairer is the pairing half of the KyRecovery client, narrowed so tests can stand in
+// a fake without reaching the network.
+type recoveryPairer interface {
+	ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (backup.PairingResult, error)
+}
+
 type Server struct {
 	config     *config.Config
 	store      store.Store
@@ -28,7 +35,7 @@ type Server struct {
 	oidc       *sso.GenericOIDCClient
 	saml       *sso.SAMLServiceProvider
 	scim       *scim.Server
-	recovery   *backup.KyRecoveryClient
+	recovery   recoveryPairer
 	mux        *http.ServeMux
 	attemptsMu sync.Mutex
 	attempts   map[string]attemptWindow
