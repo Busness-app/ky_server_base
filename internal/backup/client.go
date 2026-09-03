@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,10 @@ import (
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky_server_base/internal/config"
 )
+
+// encryptionKeyPath is where a restore drops the key that decrypts users.totp_secret_enc,
+// relative to the restore target: the same <DataDir>/encryption.key config.LoadFromEnv reads.
+const encryptionKeyPath = "data/encryption.key"
 
 // KyRecoveryClient implements the Zero-Code Pairing & Push client contract.
 type KyRecoveryClient struct {
@@ -226,6 +231,19 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 			sqlitePaths = append(sqlitePaths, relPath)
 		}
 	}
+
+	// The encryption key rides along. users.totp_secret_enc is AES-GCM under it, so a capsule
+	// without it restores a database whose MFA secrets are unreadable forever. The capsule is
+	// sealed to the suite recovery public key; only k custodians together open it, which is
+	// exactly what that key is for. Spelled the way keyfile.LoadOrCreate reads it back.
+	if len(cfg.Security.EncryptionKey) != 32 {
+		return nil, fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to build a payload that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
+	}
+	files = append(files, PushBackupFile{
+		Path:       encryptionKeyPath,
+		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
+		Mode:       0600,
+	})
 
 	// Include config manifest snapshot
 	cfgJSON, _ := json.MarshalIndent(map[string]any{

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"os"
+	"strings"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 )
@@ -28,4 +29,17 @@ func toCapsuleFiles(files []BackupFile) []capsule.File {
 		out = append(out, capsule.File{Path: f.Path, Content: f.Data, Mode: os.FileMode(f.Mode)})
 	}
 	return out
+}
+
+// FilenameSafe reduces a capsule ID to [A-Za-z0-9._-]. The ID embeds KY_APP_NAME, which an
+// operator sets, so it can carry a quote, a slash or a newline that would break out of a
+// Content-Disposition header or escape the directory a CLI export writes into.
+func FilenameSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			return r
+		}
+		return '-'
+	}, s)
 }

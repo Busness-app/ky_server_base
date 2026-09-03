@@ -13,10 +13,8 @@ import (
 	"io"
 )
 
-var (
-	ErrCiphertextTooShort = errors.New("ciphertext too short")
-	ErrDecryptionFailed   = errors.New("decryption failed or invalid key")
-)
+// ErrCiphertextTooShort reports a payload shorter than the AES-GCM nonce it must start with.
+var ErrCiphertextTooShort = errors.New("crypto: ciphertext too short")
 
 // ErrKeyLength reports an AES-256-GCM key that is not exactly 32 bytes.
 var ErrKeyLength = errors.New("crypto: AES-256-GCM key must be exactly 32 bytes")
@@ -46,7 +44,7 @@ func DecryptAESGCM(encoded string, key []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) < aesGCM.NonceSize() {
-		return nil, errors.New("ciphertext too short")
+		return nil, ErrCiphertextTooShort
 	}
 	nonce, ciphertext := data[:aesGCM.NonceSize()], data[aesGCM.NonceSize():]
 	return aesGCM.Open(nil, nonce, ciphertext, nil)

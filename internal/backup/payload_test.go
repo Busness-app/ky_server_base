@@ -1,0 +1,131 @@
+package backup_test
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/keyfile"
+	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busness-app/ky_server_base/internal/backup"
+	"github.com/Busness-app/ky_server_base/internal/config"
+)
+
+func payloadConfig(t *testing.T) (*config.Config, []byte) {
+	t.Helper()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.Server.AppName = "busnes_app"
+	cfg.Server.Port = 8080
+	cfg.Database.Driver = "postgres" // no SQLite file to read in a temp dir
+	cfg.Security.EncryptionKey = key
+	return cfg, key
+}
+
+// The encryption key must ride in the capsule: users.totp_secret_enc is AES-GCM under it, so
+// a restore without it hands the operator a database whose MFA secrets are gone for good.
+func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
+	cfg, key := payloadConfig(t)
+	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range payload.Files {
+		if f.Path != "data/encryption.key" {
+			continue
+		}
+		found = true
+		got, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := hex.EncodeToString(key) + "\n"; string(got) != want {
+			t.Errorf("content: got %q, want the lowercase hex keyfile reads", got)
+		}
+		if f.Mode != 0600 {
+			t.Errorf("mode: got %o, want 600", f.Mode)
+		}
+	}
+	if !found {
+		t.Fatal("payload has no data/encryption.key")
+	}
+	req, _ := payload.VerificationRecipe["required_files"].([]string)
+	if !slices.Contains(req, "data/encryption.key") {
+		t.Errorf("required_files: got %v, want data/encryption.key among them", req)
+	}
+}
+
+// End to end: seal the payload to a recovery key, open it with the private half, and the
+// restored tree must hold a key file keyfile can read back byte for byte.
+func TestSealedCapsuleRestoresTheEncryptionKey(t *testing.T) {
+	cfg, key := payloadConfig(t)
+	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make([]backup.BackupFile, 0, len(payload.Files))
+	for _, f := range payload.Files {
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
+	}
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := backup.Seal(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe,
+		backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if _, _, err := capsule.Open(raw, priv, target); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(target, "data", "encryption.key")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("restored key file: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("restored mode: got %o, want 600", info.Mode().Perm())
+	}
+	got, err := keyfile.LoadEncoded(path, 32, keyfile.Hex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(key) {
+		t.Error("restored key does not match the running instance's key")
+	}
+}
+
+func TestBuildLocalPayloadRefusesAShortKey(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	cfg.Security.EncryptionKey = cfg.Security.EncryptionKey[:16]
+	if _, err := backup.BuildLocalPayload(cfg, "1.0.0"); err == nil {
+		t.Fatal("a 16-byte encryption key was accepted")
+	}
+}
+
+func TestFilenameSafe(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"busnes_app-2026-09-03T00.00.00Z", "busnes_app-2026-09-03T00.00.00Z"},
+		{`../../etc/pa"sswd`, "..-..-etc-pa-sswd"}, // dots survive, separators do not
+		{"cap\nid", "cap-id"},
+	} {
+		if got := backup.FilenameSafe(tc.in); got != tc.want {
+			t.Errorf("FilenameSafe(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

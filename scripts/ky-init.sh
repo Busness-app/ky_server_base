@@ -31,7 +31,7 @@ rsync -av --progress "$BASE_DIR/" "$TARGET_DIR/" \
     --exclude='data' \
     --exclude='backups' \
     --exclude='ky_server_base' \
-    --exclude='recovery_kit.html'
+    --exclude='*.kycap'
 
 cd "$TARGET_DIR"
 

@@ -89,12 +89,16 @@ type CaptchaConfig struct {
 	DifficultyPoW int    `json:"difficulty_pow"`
 }
 
+// DefaultAppName is the service name an unconfigured instance runs under. Capsules are sealed
+// under it, so the restore CLI has to agree with it without loading a whole Config.
+const DefaultAppName = "Busnes.app"
+
 // LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 func LoadFromEnv() (*Config, error) {
 	port := getEnvInt("KY_PORT", getEnvInt("PORT", 8080))
 	host := getEnv("KY_HOST", "0.0.0.0")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
-	appName := getEnv("KY_APP_NAME", "Busnes.app")
+	appName := getEnv("KY_APP_NAME", DefaultAppName)
 	env := getEnv("KY_ENV", "development")
 
 	driver := strings.ToLower(getEnv("KY_DB_DRIVER", "sqlite"))

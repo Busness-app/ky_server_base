@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky-primitives/totp"
@@ -293,5 +296,46 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 	srv.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusConflict {
 		t.Fatalf("re-pair to a different key: got %d, want 409: %s", w2.Code, w2.Body.String())
+	}
+}
+
+// A recovery.pub swapped under a live instance must stop the export, not produce a capsule
+// sealed to a key the suite's custodians cannot open.
+func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+
+	pinned, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(),
+		backup.RecoveryKey{Public: pinned.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap the file for a different key, leaving the settings pin on the first one.
+	other, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := backup.RecoveryKeyPath(cfg.Database.DataDir)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyfile.Store(path, other.Public().Bytes(), keyfile.Raw); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/backup/export-capsule", nil)
+	req.AddCookie(loginAs(t, srv, st, "alice", "admin"))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("export with a swapped recovery.pub: got %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "pinned key ID") {
+		t.Errorf("body does not name the condition: %s", w.Body.String())
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,5 +74,19 @@ func TestRestoreRefusesOneShare(t *testing.T) {
 	path, shares := sealFixture(t, "busnes_app")
 	if err := restore(path, t.TempDir(), "busnes_app", shares[:1], &bytes.Buffer{}); err == nil {
 		t.Fatal("one share of a 2-of-3 kit was accepted")
+	}
+}
+
+// Shares arrive on stdin, never in argv. Custodians paste from cards, so the parser has to
+// forgive trailing spaces and the blank lines a paste leaves behind.
+func TestReadSharesSkipsBlankLinesAndTrims(t *testing.T) {
+	in := "  ky2-a  \n\n\t\n ky2-b\nky2-c\t\n   \n"
+	got, err := readShares(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ky2-a", "ky2-b", "ky2-c"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

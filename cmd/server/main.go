@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -256,7 +257,7 @@ func runExportCapsule(args []string) {
 	}
 	path := *out
 	if path == "" {
-		path = m.CapsuleID + ".kycap"
+		path = backup.FilenameSafe(m.CapsuleID) + ".kycap"
 	}
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		log.Fatalf("Write: %v", err)
@@ -304,29 +305,64 @@ func restore(capsulePath, targetDir, expectService string, shareStrings []string
 	return nil
 }
 
-type multiFlag []string
+// readShares takes custodian shares off a reader, one per non-empty line. They never travel
+// in argv: /proc/<pid>/cmdline is world-readable, argv is kept in shell history and copied by
+// every process monitor, and k of these lines rebuild the suite private key.
+func readShares(r io.Reader) ([]string, error) {
+	var shares []string
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		if line := strings.TrimSpace(sc.Text()); line != "" {
+			shares = append(shares, line)
+		}
+	}
+	return shares, sc.Err()
+}
 
-func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+// stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.
+func stdinIsTerminal() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
 
 func runRestore(args []string) {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	capsulePath := fs.String("capsule", "", "path to the .kycap file")
 	target := fs.String("to", "", "empty directory to restore into")
-	service := fs.String("service", "", "expected service name (default: KY_APP_NAME)")
-	var shares multiFlag
-	fs.Var(&shares, "share", "one custodian share (ky2-...); repeat for each")
+	service := fs.String("service", "", "expected service name (default: $KY_APP_NAME)")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, "Usage: ky_server_base restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
+			"Custodian shares are read from stdin, one ky2-... share per line, and never from\n"+
+			"the command line: argv is world-readable and lands in shell history.\n\n")
+		fs.PrintDefaults()
+	}
 	_ = fs.Parse(args)
-	if *capsulePath == "" || *target == "" || len(shares) == 0 {
+	if *capsulePath == "" || *target == "" {
 		fs.Usage()
 		os.Exit(2)
 	}
 	if *service == "" {
-		cfg, err := config.LoadFromEnv()
-		if err != nil {
-			log.Fatalf("Failed to load configuration: %v", err)
-		}
-		*service = cfg.Server.AppName
+		// Not config.LoadFromEnv: it mints <DataDir>/encryption.key as a side effect, and a
+		// recovery host has no business growing a key of its own mid-ceremony.
+		*service = os.Getenv("KY_APP_NAME")
+	}
+	if *service == "" {
+		*service = config.DefaultAppName
+	}
+	if *service == "" {
+		log.Fatal("Error: -service is required when KY_APP_NAME is not set")
+	}
+
+	if stdinIsTerminal() {
+		fmt.Fprintln(os.Stderr, "Paste custodian shares, one per line, then Ctrl-D:")
+	}
+	shares, err := readShares(os.Stdin)
+	if err != nil {
+		log.Fatalf("Reading shares: %v", err)
+	}
+	if len(shares) == 0 {
+		log.Fatal("Error: no custodian shares on stdin")
 	}
 	if err := restore(*capsulePath, *target, *service, shares, os.Stdout); err != nil {
 		log.Fatalf("Restore failed: %v", err)

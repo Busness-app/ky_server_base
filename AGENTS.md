@@ -95,7 +95,7 @@ Run the same checks locally with `make ci`; add `make test-postgres` when a Post
 
 - [internal/config/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/store/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
-- [internal/crypto/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/crypto/AGENTS.md): Cryptographic primitives (Argon2id, AES-256-GCM, HMAC, PKCE).
+- [internal/crypto/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
 - [internal/auth/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
 - [internal/sso/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
 - [internal/scim/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.

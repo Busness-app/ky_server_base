@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"strings"
 
 	"github.com/Busness-app/ky_server_base/internal/backup"
 )
+
+// errRecoveryKeyMismatch answers a swapped recovery.pub: the pin in the database and the key
+// on disk disagree, so refuse rather than seal a capsule nobody's custodians can open.
+const errRecoveryKeyMismatch = "Recovery key file does not match the pinned key ID; refusing to seal"
 
 // collectFiles is what both the drill and the export seal: the same payload the deposit path
 // will send, decoded from BuildLocalPayload's transport form.
@@ -41,6 +44,10 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pinned, err := backup.LoadRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings())
+	if errors.Is(err, backup.ErrRecoveryKeyMismatch) {
+		s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
+		return
+	}
 	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
 		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
 		return
@@ -66,6 +73,10 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery; no recovery key to seal to")
 		return
 	}
+	if errors.Is(err, backup.ErrRecoveryKeyMismatch) {
+		s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
+		return
+	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
 		return
@@ -76,22 +87,10 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.kycap"`, filenameSafe(m.CapsuleID)))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.kycap"`, backup.FilenameSafe(m.CapsuleID)))
 	w.Header().Set("X-Recovery-Key-ID", m.RecoveryKeyID)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
-}
-
-// filenameSafe reduces a capsule ID to [A-Za-z0-9._-]. The ID embeds KY_APP_NAME, which an
-// operator sets, so it can carry a quote or a newline that would break out of the header.
-func filenameSafe(s string) string {
-	return strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
-			return r
-		}
-		return '-'
-	}, s)
 }
 
 type RemotePairRequest struct {
