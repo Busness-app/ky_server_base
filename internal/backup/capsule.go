@@ -1,11 +1,24 @@
 package backup
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 )
+
+// MaxCapsuleFileBytes and MaxCapsuleTotalBytes mirror the caps capsule enforces on a payload
+// (ky-primitives v0.4.0, capsule/extract.go). The library does not export them, so callers
+// that want to name the limit in an operator-facing message read them here.
+const (
+	MaxCapsuleFileBytes  = int64(64 << 20)
+	MaxCapsuleTotalBytes = int64(256 << 20)
+)
+
+// TooLargeMessage is what an operator is told when a backup outgrows a capsule.
+var TooLargeMessage = fmt.Sprintf("Backup exceeds the capsule size limit (%d MiB per file, %d MiB total)",
+	MaxCapsuleFileBytes>>20, MaxCapsuleTotalBytes>>20)
 
 // BackupFile is one member of a capsule's payload, as the collectors produce it.
 type BackupFile struct {

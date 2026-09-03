@@ -24,6 +24,10 @@ import (
 // relative to the restore target: the same <DataDir>/encryption.key config.LoadFromEnv reads.
 const encryptionKeyPath = "data/encryption.key"
 
+// recoveryPubPath is where a restore drops the suite recovery public key, matching the
+// <DataDir>/recovery.pub that RecoveryKeyPath reads.
+const recoveryPubPath = "data/recovery.pub"
+
 // KyRecoveryClient implements the Zero-Code Pairing & Push client contract.
 type KyRecoveryClient struct {
 	client *http.Client
@@ -244,6 +248,18 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
 		Mode:       0600,
 	})
+
+	// The suite recovery public key rides along when this instance is paired. It is public and
+	// the capsule is sealed to that very key, so carrying it costs nothing; without it a restore
+	// comes back with the settings pin but no file, which reads as "not paired" and steers the
+	// operator into a re-pair. Unpaired instances simply omit it, so a drill still runs.
+	if pub, err := os.ReadFile(RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
+		files = append(files, PushBackupFile{
+			Path:       recoveryPubPath,
+			DataBase64: base64.StdEncoding.EncodeToString(pub),
+			Mode:       0600,
+		})
+	}
 
 	// Include config manifest snapshot
 	cfgJSON, _ := json.MarshalIndent(map[string]any{

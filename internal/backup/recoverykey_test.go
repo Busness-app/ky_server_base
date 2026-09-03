@@ -130,6 +130,62 @@ func TestStoreRecoveryKeyRefusesARePairToASwappedFile(t *testing.T) {
 	}
 }
 
+// Deleting recovery.pub is easier than swapping it, and a restored instance starts that way:
+// the pin is in the database, the file is not on disk. A re-pair to a different key must still
+// be refused, because the pin is what decides.
+func TestStoreRecoveryKeyRefusesADifferentKeyWithNoFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	settings := openSettings(t)
+	a, _ := recoverykey.Generate()
+	b, _ := recoverykey.Generate()
+	if err := backup.StoreRecoveryKey(ctx, dir, settings, backup.RecoveryKey{Public: a.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(backup.RecoveryKeyPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	err := backup.StoreRecoveryKey(ctx, dir, settings, backup.RecoveryKey{Public: b.Public(), Threshold: 2, TotalShares: 3})
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("re-pair with no key file: got %v, want fs.ErrExist", err)
+	}
+	pinned, err := settings.GetSetting(ctx, "kyrecovery_key_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned != a.Public().ID() {
+		t.Fatalf("pin moved to %s, want %s", pinned, a.Public().ID())
+	}
+	if _, err := os.Stat(backup.RecoveryKeyPath(dir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused re-pair wrote a key file: %v", err)
+	}
+}
+
+// The same key with the file missing is the self-healing path a restore needs: it comes back.
+func TestStoreRecoveryKeyRecreatesAMissingFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	settings := openSettings(t)
+	a, _ := recoverykey.Generate()
+	k := backup.RecoveryKey{Public: a.Public(), Threshold: 2, TotalShares: 3}
+	if err := backup.StoreRecoveryKey(ctx, dir, settings, k); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(backup.RecoveryKeyPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StoreRecoveryKey(ctx, dir, settings, k); err != nil {
+		t.Fatalf("same key with no file: %v", err)
+	}
+	got, err := backup.LoadRecoveryKey(ctx, dir, settings)
+	if err != nil {
+		t.Fatalf("load after self-heal: %v", err)
+	}
+	if got.Public.ID() != a.Public().ID() {
+		t.Fatalf("recreated file holds %s, want %s", got.Public.ID(), a.Public().ID())
+	}
+}
+
 // A pairing that died between writing the key ID and the topology is not a pairing.
 func TestLoadRecoveryKeyPartialPinIsUnpaired(t *testing.T) {
 	ctx := context.Background()

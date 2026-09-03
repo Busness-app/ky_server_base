@@ -43,8 +43,9 @@ func validTopology(threshold, total int) bool {
 	return threshold >= 2 && total >= threshold && total <= 255
 }
 
-// StoreRecoveryKey persists k. keyfile.Store refuses to replace an existing file, so a
-// second pairing to a different key fails with fs.ErrExist; the same key again is a no-op.
+// StoreRecoveryKey persists k. A second pairing to a different key fails with fs.ErrExist —
+// whether or not recovery.pub still exists, because the settings pin is what decides; the
+// same key again is an idempotent refresh that recreates a missing file.
 func StoreRecoveryKey(ctx context.Context, dataDir string, settings store.SettingsStore, k RecoveryKey) error {
 	if k.Public.IsZero() {
 		return errors.New("backup: refusing to store a zero recovery public key")
@@ -53,18 +54,22 @@ func StoreRecoveryKey(ctx context.Context, dataDir string, settings store.Settin
 		return fmt.Errorf("backup: %d-of-%d is not a custodian topology", k.Threshold, k.TotalShares)
 	}
 	path := RecoveryKeyPath(dataDir)
+	// The settings pin decides, not the file; the file is a second check, not the only one.
+	// So the pin is read before the file is written: recovery.pub is absent on every restored
+	// instance (and deletable by anyone with the data directory), and without this a re-pair
+	// would just re-point a pin that already names a different key.
+	pinned, perr := settings.GetSetting(ctx, settingRecoveryKeyID)
+	if perr != nil && !errors.Is(perr, store.ErrNotFound) {
+		return perr
+	}
+	if perr == nil && pinned != k.Public.ID() {
+		return fmt.Errorf("%w: already paired to recovery key %s; rotating requires clearing both %s and the %s, %s and %s settings",
+			fs.ErrExist, pinned, path, settingRecoveryKeyID, settingThreshold, settingTotalShares)
+	}
+	// The pin either matches or is absent, so a missing file here is the self-healing path:
+	// Store writes it back and the settings below are refreshed to the same values.
 	err := keyfile.Store(path, k.Public.Bytes(), keyfile.Raw)
 	if errors.Is(err, fs.ErrExist) {
-		// The settings pin decides, not the file: an attacker with write access to the data
-		// directory but not the database could otherwise swap the file and then re-point the
-		// pin at their key by re-pairing against a server that hands back the same swap.
-		pinned, perr := settings.GetSetting(ctx, settingRecoveryKeyID)
-		switch {
-		case perr != nil && !errors.Is(perr, store.ErrNotFound):
-			return perr
-		case perr == nil && pinned != k.Public.ID():
-			return fmt.Errorf("%w: already paired to recovery key %s; remove %s to re-pair", err, pinned, path)
-		}
 		existing, lerr := keyfile.LoadEncoded(path, recoverykey.PublicKeyBytes, keyfile.Raw)
 		if lerr != nil {
 			return lerr

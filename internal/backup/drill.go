@@ -52,14 +52,21 @@ func RunRestoreDrill(ctx context.Context, serviceName, appVersion string, files 
 	if err != nil {
 		return nil, fmt.Errorf("drill key: %w", err)
 	}
+	var payloadBytes int64
+	for _, f := range files {
+		payloadBytes += int64(len(f.Data))
+	}
 	raw, _, err := capsule.Seal(serviceName, appVersion, toCapsuleFiles(files), deps, recipe, 2, 3, drillKey.Public())
 	if err != nil {
 		// A payload Seal refuses — no files, or one too large — is the drill's finding to
 		// report, not an error to hand the caller. Erroring here would throw away the
 		// Recovery Key check already computed above and answer the operator with a 500.
 		result.Passed = false
+		// The size goes next to the error: "too large" is the failure an operator can act on,
+		// and it is the payload total they have to shrink.
 		result.ErrorMessage = fmt.Sprintf("Seal failed: %v", err)
-		result.Checks = append(result.Checks, CheckItem{Name: "Seal", Passed: false, Message: result.ErrorMessage})
+		result.Checks = append(result.Checks, CheckItem{Name: "Seal", Passed: false,
+			Message: fmt.Sprintf("%s (payload %d bytes across %d files)", result.ErrorMessage, payloadBytes, len(files))})
 		result.DurationMS = time.Since(start).Milliseconds()
 		return result, nil
 	}

@@ -110,6 +110,63 @@ func TestSealedCapsuleRestoresTheEncryptionKey(t *testing.T) {
 	}
 }
 
+// A restore must come back paired, not half-paired: recovery.pub is public and the capsule is
+// sealed to that very key, so it rides along whenever the instance has one.
+func TestPayloadCarriesTheRecoveryPublicKeyWhenPaired(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	cfg.Database.DataDir = t.TempDir()
+
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unpaired, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := findFile(unpaired.Files, "data/recovery.pub"); f != nil {
+		t.Error("unpaired instance shipped a recovery.pub")
+	}
+	if req, _ := unpaired.VerificationRecipe["required_files"].([]string); slices.Contains(req, "data/recovery.pub") {
+		t.Errorf("unpaired required_files: got %v", req)
+	}
+
+	if err := keyfile.Store(backup.RecoveryKeyPath(cfg.Database.DataDir), priv.Public().Bytes(), keyfile.Raw); err != nil {
+		t.Fatal(err)
+	}
+	paired, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := findFile(paired.Files, "data/recovery.pub")
+	if f == nil {
+		t.Fatal("paired instance has no data/recovery.pub in the payload")
+	}
+	got, err := base64.StdEncoding.DecodeString(f.DataBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(priv.Public().Bytes()) {
+		t.Error("data/recovery.pub is not the pinned public key byte for byte")
+	}
+	if f.Mode != 0600 {
+		t.Errorf("mode: got %o, want 600", f.Mode)
+	}
+	if req, _ := paired.VerificationRecipe["required_files"].([]string); !slices.Contains(req, "data/recovery.pub") {
+		t.Errorf("required_files: got %v, want data/recovery.pub among them", req)
+	}
+}
+
+func findFile(files []backup.PushBackupFile, path string) *backup.PushBackupFile {
+	for i := range files {
+		if files[i].Path == path {
+			return &files[i]
+		}
+	}
+	return nil
+}
+
 func TestBuildLocalPayloadRefusesAShortKey(t *testing.T) {
 	cfg, _ := payloadConfig(t)
 	cfg.Security.EncryptionKey = cfg.Security.EncryptionKey[:16]

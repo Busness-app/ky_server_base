@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 )
 
@@ -83,6 +85,14 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, m, err := backup.Seal(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
 	if err != nil {
+		// Logged because writeError only reaches the browser: without this an export that has
+		// outgrown the capsule limits is a bare 500 with nothing anywhere naming the cause.
+		// capsule's errors carry member paths and sizes, never key material or content.
+		log.Printf("[BACKUP] export capsule: seal failed: %v", err)
+		if errors.Is(err, capsule.ErrCapsuleTooLarge) {
+			s.writeError(w, http.StatusRequestEntityTooLarge, backup.TooLargeMessage)
+			return
+		}
 		s.writeError(w, http.StatusInternalServerError, "Failed to seal capsule")
 		return
 	}

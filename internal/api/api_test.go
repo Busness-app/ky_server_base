@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -337,5 +338,47 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "pinned key ID") {
 		t.Errorf("body does not name the condition: %s", w.Body.String())
+	}
+}
+
+// A database that has outgrown the capsule's per-member cap must say so: an operator whose
+// backups have silently stopped working needs the limit, not a bare 500.
+func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+
+	key, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(),
+		backup.RecoveryKey{Public: key.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sparse file one byte past the per-member cap: os.Truncate makes it instantly, and the
+	// cap is on len(Content), which a sparse read fills with zeroes all the same.
+	big := filepath.Join(t.TempDir(), "oversized.db")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := os.Truncate(big, backup.MaxCapsuleFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DSN = big
+
+	req := httptest.NewRequest("GET", "/api/backup/export-capsule", nil)
+	req.AddCookie(loginAs(t, srv, st, "alice", "admin"))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized export: got %d, want 413: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "64 MiB per file") {
+		t.Errorf("body does not name the limit: %s", w.Body.String())
 	}
 }
