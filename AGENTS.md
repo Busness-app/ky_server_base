@@ -99,7 +99,7 @@ Run the same checks locally with `make ci`; add `make test-postgres` when a Post
 - [internal/auth/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
 - [internal/sso/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
 - [internal/scim/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
-- [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Feature 0 KyBackup capsules, restore drills, and Shamir secret splitting.
+- [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Feature 0 KyBackup capsules and restore drills.
 - [internal/devices/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
 - [internal/testdb/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.

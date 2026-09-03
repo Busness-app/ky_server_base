@@ -7,7 +7,7 @@
 1. **Base Scaffold**: Clean, modular Go backend + embedded React 19/TypeScript frontend starter.
 2. **Cloud Mobile First**: PWA with Service Worker + native web wrapper support using 90-second ephemeral QR device pairing tech.
 3. **SSO Support**: Full support for all normal SSO providers (Google, Microsoft 365, Okta, Keycloak, generic OIDC, SAML 2.0) and KySignOn with webhook replication.
-4. **KyBackup as Feature 0**: Encrypted backup capsules, Shamir secret splitting, restore drill verification compatible with `kyrecovery-server`'s `ServiceAdapter`.
+4. **KyBackup as Feature 0**: Encrypted backup capsules sealed to the suite recovery key (ky-primitives `capsule`), restore drill verification compatible with `kyrecovery-server`'s `ServiceAdapter`.
 5. **SCIM 2.0 Provisioning**: RFC 7643 & RFC 7644 compliance (`/scim/v2/Users`, `/scim/v2/Groups`) for inbound enterprise directory sync.
 6. **Swapping DBs on Demand**: Pluggable storage abstraction supporting SQLite (default, zero-CGO) and PostgreSQL (for clustered heavy enterprise workloads) with automated migrations.
 7. **KySecurity Design System**: Space Grotesk & IBM Plex Mono typography with dynamic theme selector (Patina Ky, Cyber, Nord, Paper, OLED).
@@ -35,11 +35,9 @@
 - [x] SCIM 2.0 server (`/scim/v2/ServiceProviderConfig`, `/scim/v2/Schemas`, `/scim/v2/Users`, `/scim/v2/Groups`)
 
 ### Phase 3: Feature 0 — KyBackup & KyRecovery Integration [DONE]
-- [x] AES-256-GCM encrypted backup capsule generator (`internal/backup/capsule.go`)
-- [x] Shamir Secret Sharing $(k, n)$ threshold split keys (`internal/backup/shamir.go`)
+- [x] `kycap/3` encrypted backup capsules sealed to the suite recovery key via ky-primitives `capsule` (`internal/backup/capsule.go`)
 - [x] Zero-Code pairing claim and self-declaring backup push client (`internal/backup/client.go`)
 - [x] Automated self-test restore drill runner with SQLite integrity validation (`internal/backup/drill.go`)
-- [x] Emergency offline printable HTML Recovery Kit generator (`internal/backup/recovery_kit.go`)
 
 ### Phase 4: Mobile-First PWA, Ephemeral QR Pairing & KySecurity Themes [DONE]
 - [x] React 19 + TypeScript + Vite frontend with PWA manifest & Service Worker (`web/`)
