@@ -8,23 +8,6 @@ import (
 	"github.com/Busness-app/ky_server_base/internal/crypto"
 )
 
-func TestPasswordHashingAndVerification(t *testing.T) {
-	password := "CorrectHorseBatteryStaple123!"
-
-	hash, err := crypto.HashPassword(password)
-	if err != nil {
-		t.Fatalf("failed to hash password: %v", err)
-	}
-
-	if !crypto.VerifyPassword(password, hash) {
-		t.Errorf("expected password verification to succeed")
-	}
-
-	if crypto.VerifyPassword("WrongPassword123!", hash) {
-		t.Errorf("expected password verification to fail on invalid password")
-	}
-}
-
 func TestAESGCMEncryption(t *testing.T) {
 	key := bytes.Repeat([]byte{0x42}, 32)
 	plaintext := []byte("totp secret")

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky_server_base/internal/auth"
 	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
@@ -83,7 +84,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !crypto.VerifyPassword(req.Password, user.PasswordHash) {
+	ok, err := password.Verify(req.Password, user.PasswordHash)
+	if err != nil || !ok {
 		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}

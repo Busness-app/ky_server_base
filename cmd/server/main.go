@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -62,7 +63,7 @@ func runServer() {
 			adminPass = crypto.RandomHex(12)
 			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
-		hash, err := crypto.HashPassword(adminPass)
+		hash, err := password.Hash(adminPass)
 		if err != nil {
 			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
 		}
@@ -115,10 +116,10 @@ func runServer() {
 func runInitAdmin(args []string) {
 	fs := flag.NewFlagSet("init-admin", flag.ExitOnError)
 	username := fs.String("username", "admin", "Admin username")
-	password := fs.String("password", "", "Admin password (minimum 12 characters)")
+	passwordFlag := fs.String("password", "", "Admin password (minimum 12 characters)")
 	_ = fs.Parse(args)
 
-	if *password == "" || len(*password) < 12 {
+	if *passwordFlag == "" || len(*passwordFlag) < 12 {
 		log.Fatal("Error: -password is required and must be at least 12 characters")
 	}
 
@@ -130,7 +131,7 @@ func runInitAdmin(args []string) {
 	}
 	defer st.Close()
 
-	hash, err := crypto.HashPassword(*password)
+	hash, err := password.Hash(*passwordFlag)
 	if err != nil {
 		log.Fatalf("Password hashing error: %v", err)
 	}

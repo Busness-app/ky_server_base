@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/auth"
-	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
 )
 
@@ -18,8 +18,8 @@ import (
 func loginAs(t *testing.T, srv *api.Server, st store.Store, username, role string) *http.Cookie {
 	t.Helper()
 
-	const password = "SuperSecretPass123!"
-	hash, err := crypto.HashPassword(password)
+	const testPassword = "SuperSecretPass123!"
+	hash, err := password.Hash(testPassword)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
@@ -36,7 +36,7 @@ func loginAs(t *testing.T, srv *api.Server, st store.Store, username, role strin
 		t.Fatalf("create user: %v", err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"username": username, "password": password})
+	body, _ := json.Marshal(map[string]string{"username": username, "password": testPassword})
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

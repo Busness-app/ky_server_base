@@ -8,10 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/auth"
 	"github.com/Busness-app/ky_server_base/internal/config"
-	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
 	"github.com/Busness-app/ky_server_base/internal/testdb"
 )
@@ -37,7 +37,7 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 
 	// Create test user
-	passHash, _ := crypto.HashPassword("SuperSecretPass123!")
+	passHash, _ := password.Hash("SuperSecretPass123!")
 	user := &store.User{
 		ID:           "usr_alice",
 		Username:     "alice",
@@ -129,9 +129,25 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsUnparseableStoredHash(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	_ = st.Users().CreateUser(context.Background(), &store.User{
+		ID: "usr_bad", Username: "bad", PasswordHash: "not-a-phc-string",
+		Role: "user", Status: "active", SSOProvider: "local",
+	})
+	body, _ := json.Marshal(map[string]string{"username": "bad", "password": "whatever-long-enough"})
+	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", w.Code)
+	}
+}
+
 func TestInactiveAccountInvalidatesSession(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	hash, _ := crypto.HashPassword("SuperSecretPass123!")
+	hash, _ := password.Hash("SuperSecretPass123!")
 	user := &store.User{ID: "usr_inactive", Username: "inactive", PasswordHash: hash, Role: "admin", Status: "active", SSOProvider: "local"}
 	if err := st.Users().CreateUser(context.Background(), user); err != nil {
 		t.Fatal(err)
