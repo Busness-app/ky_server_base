@@ -402,15 +402,18 @@ func TestMFALimiterKeyIsBounded(t *testing.T) {
 	if len(keys) > api.AttemptsCapForTest {
 		t.Errorf("limiter holds %d keys, want at most %d", len(keys), api.AttemptsCapForTest)
 	}
-	total := 0
+	mfaKeys := 0
 	for _, k := range keys {
 		if len(k) >= 200 {
 			t.Fatalf("limiter key is %d bytes; keys must not carry the request body", len(k))
 		}
-		total += len(k)
+		if strings.HasPrefix(k, "mfa:") {
+			mfaKeys++
+		}
 	}
-	if total >= 200*api.AttemptsCapForTest {
-		t.Errorf("limiter retains %d key bytes, which tracks the input size", total)
+	// One client, 500 distinct oversized tokens, one slot: nothing caller-supplied is in the key.
+	if mfaKeys > 1 {
+		t.Errorf("500 tokens from one IP took %d MFA slots, want at most 1: %v", mfaKeys, keys)
 	}
 
 	// Fill the limiter past the cap with live windows. A full map must evict, not refuse:
@@ -481,5 +484,96 @@ func TestPairPollProjectsTheRecord(t *testing.T) {
 	}
 	if _, ok := got["expires_at"]; !ok {
 		t.Errorf("poll response has no expires_at: %v", got)
+	}
+}
+
+// Eviction must not favour long windows. Login windows are a minute and MFA windows a minute,
+// but any caller that can mint keys at all would starve whichever window is shortest.
+func TestFullLimiterStillThrottlesLogin(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+
+	// Fill the map with the long windows an attacker minting MFA keys would leave behind.
+	// Login's window is a minute, so "evict the entry nearest expiry" would always pick it.
+	for i := 0; i < api.AttemptsCapForTest; i++ {
+		api.AllowAttemptForTest(srv, "mfa:"+strconv.Itoa(i), 3, 5*time.Minute)
+	}
+
+	loginBody, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!"})
+	throttled := false
+	for i := 1; i <= 25; i++ {
+		// A fresh MFA token before each login: under the old design this minted a new key and
+		// evicted login's window before it could ever count to its limit.
+		mfaBody, _ := json.Marshal(map[string]string{"mfa_token": "tok-" + strconv.Itoa(i), "code": "000000"})
+		mreq := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(mfaBody))
+		mreq.Header.Set("Content-Type", "application/json")
+		mreq.RemoteAddr = "192.0.2.9:41000"
+		srv.ServeHTTP(httptest.NewRecorder(), mreq)
+
+		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(loginBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.9:41000"
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if w.Code == http.StatusTooManyRequests {
+			if i < 21 {
+				t.Fatalf("login throttled at attempt %d, want no earlier than 21", i)
+			}
+			throttled = true
+			break
+		}
+		if i >= 21 {
+			t.Fatalf("login attempt %d answered %d, not 429: the login window is being evicted", i, w.Code)
+		}
+	}
+	if !throttled {
+		t.Fatal("25 logins from one IP were never throttled")
+	}
+}
+
+// A botnet spread across many IPs must not outrun the per-IP window when guessing one account.
+func TestMFAPerAccountWindow(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	ctx := context.Background()
+
+	passHash, _ := password.Hash("SuperSecretPass123!")
+	if err := st.Users().CreateUser(ctx, &store.User{
+		ID: "usr_carol", Username: "carol", Email: "carol@busnes.app",
+		PasswordHash: passHash, Role: "user", Status: "active", SSOProvider: "local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var codes int
+	for i := 1; i <= 6; i++ {
+		raw := "challenge-token-" + strconv.Itoa(i)
+		if err := st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
+			TokenHash: crypto.SHA256Hex([]byte(raw)),
+			UserID:    "usr_carol",
+			ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": "000000"})
+		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "203.0.113." + strconv.Itoa(i) + ":40000" // a different client every time
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if i < 6 {
+			if w.Code == http.StatusTooManyRequests {
+				t.Fatalf("attempt %d for the account was throttled, want no earlier than 6", i)
+			}
+			codes++
+			continue
+		}
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("attempt 6 for the account answered %d, want 429", w.Code)
+		}
+	}
+	if codes != 5 {
+		t.Fatalf("only %d attempts got through before the account window closed, want 5", codes)
 	}
 }

@@ -53,6 +53,12 @@ type attemptWindow struct {
 // The trade-off: memory is bounded, but an attacker who fills the map shortens other clients'
 // windows, since an evicted counter starts again from zero. That weakens throttling while the
 // attack runs; it never locks anyone out, which is the failure mode worth avoiding.
+//
+// Eviction is deliberately blind to how much of a window is left. Picking the entry nearest to
+// expiry would always sacrifice the shortest windows first, so a caller minting keys with a
+// long window could keep the one-minute login counter from ever reaching its limit. Every key
+// is therefore equally likely to go. The real defence is that no key carries caller-supplied
+// bytes, so filling the map costs an attacker one slot per IP.
 const attemptsCap = 10000
 
 func NewServer(cfg *config.Config, st store.Store) *Server {
@@ -95,22 +101,21 @@ func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool 
 }
 
 // makeRoom frees a slot for a new key: it drops every expired window, and if the map is still
-// full it drops the one closest to expiry. Caller holds attemptsMu. The scan is O(attemptsCap)
-// and only runs for a new key while the map is full; 10 000 entries is microseconds.
+// full it drops one live entry chosen at random, never the one nearest expiry. Caller holds
+// attemptsMu. The scan is O(attemptsCap) and only runs for a new key while the map is full;
+// 10 000 entries is microseconds.
 func (s *Server) makeRoom(now time.Time) {
-	var oldest string
-	var oldestReset time.Time
 	for candidate, w := range s.attempts {
 		if now.After(w.reset) {
 			delete(s.attempts, candidate)
-			continue
-		}
-		if oldest == "" || w.reset.Before(oldestReset) {
-			oldest, oldestReset = candidate, w.reset
 		}
 	}
-	if len(s.attempts) >= attemptsCap && oldest != "" {
-		delete(s.attempts, oldest)
+	if len(s.attempts) >= attemptsCap {
+		// Go randomises map iteration, so the first entry is an unbiased victim.
+		for candidate := range s.attempts {
+			delete(s.attempts, candidate)
+			break
+		}
 	}
 }
 
