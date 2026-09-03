@@ -1,6 +1,8 @@
 package crypto_test
 
 import (
+	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/Busness-app/ky_server_base/internal/crypto"
@@ -24,27 +26,33 @@ func TestPasswordHashingAndVerification(t *testing.T) {
 }
 
 func TestAESGCMEncryption(t *testing.T) {
-	key := crypto.RandomHex(32)
-	plaintext := []byte("Sensitive MFA Secret Payload")
+	key := bytes.Repeat([]byte{0x42}, 32)
+	plaintext := []byte("totp secret")
 
-	ciphertext, err := crypto.EncryptAESGCM(plaintext, key)
+	enc, err := crypto.EncryptAESGCM(plaintext, key)
 	if err != nil {
-		t.Fatalf("failed to encrypt: %v", err)
+		t.Fatalf("encrypt: %v", err)
 	}
-
-	decrypted, err := crypto.DecryptAESGCM(ciphertext, key)
+	dec, err := crypto.DecryptAESGCM(enc, key)
 	if err != nil {
-		t.Fatalf("failed to decrypt: %v", err)
+		t.Fatalf("decrypt: %v", err)
+	}
+	if !bytes.Equal(dec, plaintext) {
+		t.Fatalf("round trip: got %q", dec)
 	}
 
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("expected %s, got %s", plaintext, decrypted)
+	other := bytes.Repeat([]byte{0x43}, 32)
+	if _, err := crypto.DecryptAESGCM(enc, other); err == nil {
+		t.Fatal("wrong key decrypted")
 	}
+}
 
-	// Wrong key should fail
-	wrongKey := crypto.RandomHex(32)
-	if _, err := crypto.DecryptAESGCM(ciphertext, wrongKey); err == nil {
-		t.Errorf("expected decryption failure with wrong key")
+func TestAESGCMRefusesShortKey(t *testing.T) {
+	for _, n := range []int{0, 16, 31, 33, 64} {
+		_, err := crypto.EncryptAESGCM([]byte("x"), make([]byte, n))
+		if !errors.Is(err, crypto.ErrKeyLength) {
+			t.Errorf("len %d: got %v, want ErrKeyLength", n, err)
+		}
 	}
 }
 

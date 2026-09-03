@@ -18,6 +18,7 @@ import (
 
 func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
 	t.Helper()
+	t.Setenv("KY_DATA_DIR", t.TempDir())
 	cfg, _ := config.LoadFromEnv()
 	cfg.Database = testdb.Config(t)
 	cfg.Captcha.Provider = "none" // disable captcha for unit test speed

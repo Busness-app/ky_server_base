@@ -1,12 +1,14 @@
 package config_test
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/Busness-app/ky_server_base/internal/config"
 )
 
 func TestConfigLoadDefaults(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
@@ -24,6 +26,7 @@ func TestConfigLoadDefaults(t *testing.T) {
 }
 
 func TestConfigLoadFromEnvOverrides(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
 	t.Setenv("KY_PORT", "9090")
 	t.Setenv("KY_DB_DRIVER", "postgres")
 	t.Setenv("KY_DB_DSN", "postgres://user:pass@localhost:5432/testdb")
@@ -49,5 +52,29 @@ func TestConfigLoadFromEnvOverrides(t *testing.T) {
 	}
 	if cfg.Captcha.Provider != "turnstile" {
 		t.Errorf("expected captcha provider turnstile, got %s", cfg.Captcha.Provider)
+	}
+}
+
+func TestEncryptionKeyPersistsAcrossLoads(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_ENCRYPTION_KEY", "")
+	a, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Security.EncryptionKey) != 32 || !bytes.Equal(a.Security.EncryptionKey, b.Security.EncryptionKey) {
+		t.Fatal("encryption key was not persisted between loads")
+	}
+}
+
+func TestEncryptionKeyFromEnvMustBe32Bytes(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_ENCRYPTION_KEY", "deadbeef")
+	if _, err := config.LoadFromEnv(); err == nil {
+		t.Fatal("8-byte key accepted")
 	}
 }

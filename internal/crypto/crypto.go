@@ -21,6 +21,9 @@ var (
 	ErrDecryptionFailed   = errors.New("decryption failed or invalid key")
 )
 
+// ErrKeyLength reports an AES-256-GCM key that is not exactly 32 bytes.
+var ErrKeyLength = errors.New("crypto: AES-256-GCM key must be exactly 32 bytes")
+
 // Argon2id parameters (RFC 9106 recommended defaults for interactive login)
 const (
 	ArgonTime    = 1
@@ -97,82 +100,46 @@ func splitHash(s string) []string {
 	return parts
 }
 
-// EncryptAESGCM encrypts plaintext using AES-256-GCM with a random 12-byte IV.
-// key must be either a 32-byte raw slice or a 64-char hex string.
-func EncryptAESGCM(plaintext []byte, key string) (string, error) {
-	k, err := parseKey(key)
+// EncryptAESGCM encrypts plaintext with AES-256-GCM under a 32-byte key and a random
+// 12-byte nonce, returning nonce||ciphertext as raw base64url.
+func EncryptAESGCM(plaintext, key []byte) (string, error) {
+	aesGCM, err := newGCM(key)
 	if err != nil {
 		return "", err
 	}
-
-	block, err := aes.NewCipher(k)
-	if err != nil {
-		return "", err
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
 	nonce := make([]byte, aesGCM.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-
-	ciphertext := aesGCM.Seal(nonce, nonce, plaintext, nil)
-	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
+	return base64.RawURLEncoding.EncodeToString(aesGCM.Seal(nonce, nonce, plaintext, nil)), nil
 }
 
-// DecryptAESGCM decrypts a base64url encoded ciphertext with AES-256-GCM.
-func DecryptAESGCM(encodedCiphertext, key string) ([]byte, error) {
-	k, err := parseKey(key)
+// DecryptAESGCM reverses EncryptAESGCM.
+func DecryptAESGCM(encoded string, key []byte) ([]byte, error) {
+	aesGCM, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
-
-	data, err := base64.RawURLEncoding.DecodeString(encodedCiphertext)
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err
 	}
-
-	block, err := aes.NewCipher(k)
-	if err != nil {
-		return nil, err
+	if len(data) < aesGCM.NonceSize() {
+		return nil, errors.New("ciphertext too short")
 	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := aesGCM.NonceSize()
-	if len(data) < nonceSize {
-		return nil, ErrCiphertextTooShort
-	}
-
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, ErrDecryptionFailed
-	}
-
-	return plaintext, nil
+	nonce, ciphertext := data[:aesGCM.NonceSize()], data[aesGCM.NonceSize():]
+	return aesGCM.Open(nil, nonce, ciphertext, nil)
 }
 
-func parseKey(keyStr string) ([]byte, error) {
-	if len(keyStr) == 64 {
-		if b, err := hex.DecodeString(keyStr); err == nil && len(b) == 32 {
-			return b, nil
-		}
+func newGCM(key []byte) (cipher.AEAD, error) {
+	if len(key) != 32 {
+		return nil, ErrKeyLength
 	}
-	raw := []byte(keyStr)
-	if len(raw) == 32 {
-		return raw, nil
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
 	}
-	// Derive 32 bytes from arbitrary key using SHA-256
-	h := sha256.Sum256([]byte(keyStr))
-	return h[:], nil
+	return cipher.NewGCM(block)
 }
 
 // ComputeHMACSHA256 computes HMAC-SHA256 hex string.

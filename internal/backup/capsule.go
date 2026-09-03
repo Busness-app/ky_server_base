@@ -117,7 +117,7 @@ func CreateCapsule(serviceName, appVersion string, files []BackupFile, deps, rec
 		return nil, nil, err
 	}
 
-	ciphertextHex, err := crypto.EncryptAESGCM(tarBytes, hex.EncodeToString(ephemeralKey))
+	ciphertextHex, err := crypto.EncryptAESGCM(tarBytes, ephemeralKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to encrypt capsule payload: %w", err)
 	}
@@ -140,7 +140,7 @@ func CreateCapsule(serviceName, appVersion string, files []BackupFile, deps, rec
 // ExtractCapsule decapsulates, decrypts, and unpacks files into a target directory (with 0700 permissions).
 func ExtractCapsule(capsule *Capsule, key []byte, targetDir string) ([]BackupFile, error) {
 	// 1. Decrypt payload
-	tarBytes, err := crypto.DecryptAESGCM(string(capsule.Ciphertext), hex.EncodeToString(key))
+	tarBytes, err := crypto.DecryptAESGCM(string(capsule.Ciphertext), key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt capsule: %w", err)
 	}
