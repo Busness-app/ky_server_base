@@ -1,50 +1,41 @@
 package crypto_test
 
 import (
+	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/Busness-app/ky_server_base/internal/crypto"
 )
 
-func TestPasswordHashingAndVerification(t *testing.T) {
-	password := "CorrectHorseBatteryStaple123!"
+func TestAESGCMEncryption(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	plaintext := []byte("totp secret")
 
-	hash, err := crypto.HashPassword(password)
+	enc, err := crypto.EncryptAESGCM(plaintext, key)
 	if err != nil {
-		t.Fatalf("failed to hash password: %v", err)
+		t.Fatalf("encrypt: %v", err)
+	}
+	dec, err := crypto.DecryptAESGCM(enc, key)
+	if err != nil {
+		t.Fatalf("decrypt: %v", err)
+	}
+	if !bytes.Equal(dec, plaintext) {
+		t.Fatalf("round trip: got %q", dec)
 	}
 
-	if !crypto.VerifyPassword(password, hash) {
-		t.Errorf("expected password verification to succeed")
-	}
-
-	if crypto.VerifyPassword("WrongPassword123!", hash) {
-		t.Errorf("expected password verification to fail on invalid password")
+	other := bytes.Repeat([]byte{0x43}, 32)
+	if _, err := crypto.DecryptAESGCM(enc, other); err == nil {
+		t.Fatal("wrong key decrypted")
 	}
 }
 
-func TestAESGCMEncryption(t *testing.T) {
-	key := crypto.RandomHex(32)
-	plaintext := []byte("Sensitive MFA Secret Payload")
-
-	ciphertext, err := crypto.EncryptAESGCM(plaintext, key)
-	if err != nil {
-		t.Fatalf("failed to encrypt: %v", err)
-	}
-
-	decrypted, err := crypto.DecryptAESGCM(ciphertext, key)
-	if err != nil {
-		t.Fatalf("failed to decrypt: %v", err)
-	}
-
-	if string(decrypted) != string(plaintext) {
-		t.Errorf("expected %s, got %s", plaintext, decrypted)
-	}
-
-	// Wrong key should fail
-	wrongKey := crypto.RandomHex(32)
-	if _, err := crypto.DecryptAESGCM(ciphertext, wrongKey); err == nil {
-		t.Errorf("expected decryption failure with wrong key")
+func TestAESGCMRefusesShortKey(t *testing.T) {
+	for _, n := range []int{0, 16, 31, 33, 64} {
+		_, err := crypto.EncryptAESGCM([]byte("x"), make([]byte, n))
+		if !errors.Is(err, crypto.ErrKeyLength) {
+			t.Errorf("len %d: got %v, want ErrKeyLength", n, err)
+		}
 	}
 }
 

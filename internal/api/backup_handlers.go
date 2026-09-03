@@ -3,85 +3,104 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
 	"net/http"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 )
+
+// errRecoveryKeyMismatch answers a swapped recovery.pub: the pin in the database and the key
+// on disk disagree, so refuse rather than seal a capsule nobody's custodians can open.
+const errRecoveryKeyMismatch = "Recovery key file does not match the pinned key ID; refusing to seal"
+
+// collectFiles is what both the drill and the export seal: the same payload the deposit path
+// will send, decoded from BuildLocalPayload's transport form.
+func (s *Server) collectFiles() (*backup.PushBackupPayload, []backup.BackupFile, error) {
+	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+	if err != nil {
+		return nil, nil, err
+	}
+	files := make([]backup.BackupFile, 0, len(payload.Files))
+	for _, f := range payload.Files {
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			return nil, nil, err
+		}
+		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
+	}
+	return payload, files, nil
+}
 
 func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-
-	// 1. Build local payload
-	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+	payload, files, err := s.collectFiles()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
 	}
-
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
-			return
-		}
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: data,
-			Mode: f.Mode,
-		})
-	}
-
-	// 2. Encapsulate
-	capsule, key, err := backup.CreateCapsule(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to create backup capsule")
+	pinned, err := backup.LoadRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings())
+	if errors.Is(err, backup.ErrRecoveryKeyMismatch) {
+		s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
 		return
 	}
-
-	// 3. Execute restore drill
-	drillResult, err := backup.RunRestoreDrill(r.Context(), capsule, key)
+	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
+		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
+		return
+	}
+	result, err := backup.RunRestoreDrill(r.Context(), s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, pinned)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to execute restore drill")
 		return
 	}
-
-	s.writeJSON(w, http.StatusOK, drillResult)
+	s.writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) handleExportRecoveryKit(w http.ResponseWriter, r *http.Request) {
-	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+// handleExportCapsule hands the operator the sealed capsule itself. Only the custodians'
+// shares open it, so the download is safe to store anywhere; kyrecovery is where it belongs.
+func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
+	payload, files, err := s.collectFiles()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
 	}
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
-			return
-		}
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: data,
-			Mode: f.Mode,
-		})
-	}
-
-	capsule, _, err := backup.CreateCapsule(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to generate capsule for kit")
+	key, err := backup.LoadRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings())
+	if errors.Is(err, backup.ErrNotPaired) {
+		s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery; no recovery key to seal to")
 		return
 	}
-
-	html := backup.GenerateRecoveryKitHTML(capsule, s.config.Server.AppName, s.config.Server.AppURL)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if errors.Is(err, backup.ErrRecoveryKeyMismatch) {
+		s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
+		return
+	}
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
+		return
+	}
+	raw, m, err := backup.Seal(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
+	if err != nil {
+		// Logged because writeError only reaches the browser: without this an export that has
+		// outgrown the capsule limits is a bare 500 with nothing anywhere naming the cause.
+		// capsule's errors carry member paths and sizes, never key material or content.
+		log.Printf("[BACKUP] export capsule: seal failed: %v", err)
+		if errors.Is(err, capsule.ErrCapsuleTooLarge) {
+			s.writeError(w, http.StatusRequestEntityTooLarge, backup.TooLargeMessage)
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "Failed to seal capsule")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.kycap"`, backup.FilenameSafe(m.CapsuleID)))
+	w.Header().Set("X-Recovery-Key-ID", m.RecoveryKeyID)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write(raw)
 }
 
 type RemotePairRequest struct {
@@ -101,23 +120,34 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	token, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName)
+	result, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "Recovery pairing failed")
 		return
 	}
 
+	if err := backup.StoreRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings(), result.Key); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			s.writeError(w, http.StatusConflict, "Already paired to a different recovery key")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery key")
+		return
+	}
 	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_url", req.RecoveryURL); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}
-	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", token); err != nil {
+	if err := s.store.Settings().SetSetting(r.Context(), "kyrecovery_token", result.APIToken); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"paired":       true,
-		"recovery_url": req.RecoveryURL,
+		"paired":          true,
+		"recovery_url":    req.RecoveryURL,
+		"recovery_key_id": result.Key.Public.ID(),
+		"threshold":       result.Key.Threshold,
+		"total_shares":    result.Key.TotalShares,
 	})
 }

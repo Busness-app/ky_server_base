@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Busness-app/ky-primitives/keyfile"
 )
 
 // Config encapsulates all runtime configuration for ky_server_base.
@@ -45,7 +48,7 @@ type DatabaseConfig struct {
 // SecurityConfig holds encryption keys, cookie secrets, and session settings.
 type SecurityConfig struct {
 	SessionSecret string `json:"session_secret"`
-	EncryptionKey string `json:"encryption_key"` // 32-byte hex for AES-256-GCM
+	EncryptionKey []byte `json:"-"` // 32 bytes for AES-256-GCM; never serialised
 	CookieSecure  bool   `json:"cookie_secure"`
 	CookieDomain  string `json:"cookie_domain"`
 	SessionTTL    time.Duration
@@ -75,7 +78,6 @@ type SCIMConfig struct {
 // BackupConfig holds parameters for KyBackup capsules & recovery drills.
 type BackupConfig struct {
 	StorageDir   string `json:"storage_dir"`
-	MasterKey    string `json:"master_key"`
 	AutoDrillDay int    `json:"auto_drill_day"` // day of week
 }
 
@@ -87,12 +89,16 @@ type CaptchaConfig struct {
 	DifficultyPoW int    `json:"difficulty_pow"`
 }
 
+// DefaultAppName is the service name an unconfigured instance runs under. Capsules are sealed
+// under it, so the restore CLI has to agree with it without loading a whole Config.
+const DefaultAppName = "Busnes.app"
+
 // LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 func LoadFromEnv() (*Config, error) {
 	port := getEnvInt("KY_PORT", getEnvInt("PORT", 8080))
 	host := getEnv("KY_HOST", "0.0.0.0")
 	appURL := getEnv("KY_APP_URL", fmt.Sprintf("http://localhost:%d", port))
-	appName := getEnv("KY_APP_NAME", "Busnes.app")
+	appName := getEnv("KY_APP_NAME", DefaultAppName)
 	env := getEnv("KY_ENV", "development")
 
 	driver := strings.ToLower(getEnv("KY_DB_DRIVER", "sqlite"))
@@ -112,12 +118,15 @@ func LoadFromEnv() (*Config, error) {
 		sessionSecret = generateRandomHex(32)
 	}
 
-	encryptionKey := getEnv("KY_ENCRYPTION_KEY", "")
-	if env == "production" && encryptionKey == "" {
-		return nil, fmt.Errorf("KY_ENCRYPTION_KEY is required in production")
+	encryptionKey, ok, err := keyfile.FromEnv("KY_ENCRYPTION_KEY", 32)
+	if err != nil {
+		return nil, fmt.Errorf("KY_ENCRYPTION_KEY: %w", err)
 	}
-	if encryptionKey == "" {
-		encryptionKey = generateRandomHex(32)
+	if !ok {
+		encryptionKey, err = keyfile.LoadOrCreate(filepath.Join(dataDir, "encryption.key"), 32)
+		if err != nil {
+			return nil, fmt.Errorf("encryption key: %w", err)
+		}
 	}
 
 	cfg := &Config{
@@ -164,7 +173,6 @@ func LoadFromEnv() (*Config, error) {
 		},
 		Backup: BackupConfig{
 			StorageDir:   getEnv("KY_BACKUP_DIR", "./backups"),
-			MasterKey:    getEnv("KY_BACKUP_KEY", encryptionKey),
 			AutoDrillDay: getEnvInt("KY_BACKUP_DRILL_DAY", 0), // Sunday
 		},
 		Captcha: CaptchaConfig{

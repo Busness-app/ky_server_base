@@ -10,169 +10,55 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
-
-	"golang.org/x/crypto/argon2"
 )
 
-var (
-	ErrCiphertextTooShort = errors.New("ciphertext too short")
-	ErrDecryptionFailed   = errors.New("decryption failed or invalid key")
-)
+// ErrCiphertextTooShort reports a payload shorter than the AES-GCM nonce it must start with.
+var ErrCiphertextTooShort = errors.New("crypto: ciphertext too short")
 
-// Argon2id parameters (RFC 9106 recommended defaults for interactive login)
-const (
-	ArgonTime    = 1
-	ArgonMemory  = 64 * 1024 // 64 MB
-	ArgonThreads = 4
-	ArgonKeyLen  = 32
-	SaltLen      = 16
-)
+// ErrKeyLength reports an AES-256-GCM key that is not exactly 32 bytes.
+var ErrKeyLength = errors.New("crypto: AES-256-GCM key must be exactly 32 bytes")
 
-// HashPassword hashes a plaintext password using Argon2id with a cryptographically secure random salt.
-func HashPassword(password string) (string, error) {
-	salt := make([]byte, SaltLen)
-	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
-		return "", fmt.Errorf("failed to generate salt: %w", err)
-	}
-
-	hash := argon2.IDKey([]byte(password), salt, ArgonTime, ArgonMemory, ArgonThreads, ArgonKeyLen)
-
-	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
-	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
-
-	// Format: $argon2id$v=19$m=65536,t=1,p=4$<salt>$<hash>
-	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, ArgonMemory, ArgonTime, ArgonThreads, b64Salt, b64Hash), nil
-}
-
-// VerifyPassword verifies an Argon2id formatted password hash against a candidate plaintext password.
-func VerifyPassword(password, encodedHash string) bool {
-	var version int
-	var memory uint32
-	var time uint32
-	var threads uint8
-	var b64Salt, b64Hash string
-
-	_, err := fmt.Sscanf(encodedHash, "$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		&version, &memory, &time, &threads, &b64Salt, &b64Hash)
-	if err != nil {
-		// Fallback parse if fmt.Sscanf splits differently
-		parts := splitHash(encodedHash)
-		if len(parts) != 6 || parts[1] != "argon2id" {
-			return false
-		}
-		b64Salt = parts[4]
-		b64Hash = parts[5]
-		memory = ArgonMemory
-		time = ArgonTime
-		threads = ArgonThreads
-	}
-
-	salt, err := base64.RawStdEncoding.DecodeString(b64Salt)
-	if err != nil {
-		return false
-	}
-
-	expectedHash, err := base64.RawStdEncoding.DecodeString(b64Hash)
-	if err != nil {
-		return false
-	}
-
-	candidateHash := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(expectedHash)))
-
-	return subtle.ConstantTimeCompare(candidateHash, expectedHash) == 1
-}
-
-func splitHash(s string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '$' {
-			parts = append(parts, s[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
-}
-
-// EncryptAESGCM encrypts plaintext using AES-256-GCM with a random 12-byte IV.
-// key must be either a 32-byte raw slice or a 64-char hex string.
-func EncryptAESGCM(plaintext []byte, key string) (string, error) {
-	k, err := parseKey(key)
+// EncryptAESGCM encrypts plaintext with AES-256-GCM under a 32-byte key and a random
+// 12-byte nonce, returning nonce||ciphertext as raw base64url.
+func EncryptAESGCM(plaintext, key []byte) (string, error) {
+	aesGCM, err := newGCM(key)
 	if err != nil {
 		return "", err
 	}
-
-	block, err := aes.NewCipher(k)
-	if err != nil {
-		return "", err
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-
 	nonce := make([]byte, aesGCM.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-
-	ciphertext := aesGCM.Seal(nonce, nonce, plaintext, nil)
-	return base64.RawURLEncoding.EncodeToString(ciphertext), nil
+	return base64.RawURLEncoding.EncodeToString(aesGCM.Seal(nonce, nonce, plaintext, nil)), nil
 }
 
-// DecryptAESGCM decrypts a base64url encoded ciphertext with AES-256-GCM.
-func DecryptAESGCM(encodedCiphertext, key string) ([]byte, error) {
-	k, err := parseKey(key)
+// DecryptAESGCM reverses EncryptAESGCM.
+func DecryptAESGCM(encoded string, key []byte) ([]byte, error) {
+	aesGCM, err := newGCM(key)
 	if err != nil {
 		return nil, err
 	}
-
-	data, err := base64.RawURLEncoding.DecodeString(encodedCiphertext)
+	data, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err
 	}
-
-	block, err := aes.NewCipher(k)
-	if err != nil {
-		return nil, err
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := aesGCM.NonceSize()
-	if len(data) < nonceSize {
+	if len(data) < aesGCM.NonceSize() {
 		return nil, ErrCiphertextTooShort
 	}
-
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, ErrDecryptionFailed
-	}
-
-	return plaintext, nil
+	nonce, ciphertext := data[:aesGCM.NonceSize()], data[aesGCM.NonceSize():]
+	return aesGCM.Open(nil, nonce, ciphertext, nil)
 }
 
-func parseKey(keyStr string) ([]byte, error) {
-	if len(keyStr) == 64 {
-		if b, err := hex.DecodeString(keyStr); err == nil && len(b) == 32 {
-			return b, nil
-		}
+func newGCM(key []byte) (cipher.AEAD, error) {
+	if len(key) != 32 {
+		return nil, ErrKeyLength
 	}
-	raw := []byte(keyStr)
-	if len(raw) == 32 {
-		return raw, nil
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
 	}
-	// Derive 32 bytes from arbitrary key using SHA-256
-	h := sha256.Sum256([]byte(keyStr))
-	return h[:], nil
+	return cipher.NewGCM(block)
 }
 
 // ComputeHMACSHA256 computes HMAC-SHA256 hex string.

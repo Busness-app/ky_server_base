@@ -131,22 +131,21 @@ export const Backup: React.FC = () => {
           )}
         </div>
 
-        {/* Emergency Recovery Kit & KyRecovery Pairing */}
+        {/* Sealed Recovery Capsule & KyRecovery Pairing */}
         <div className="panel">
-          <h3 style={{ fontSize: '16px', marginBottom: '4px' }}>Emergency Recovery Kit</h3>
+          <h3 style={{ fontSize: '16px', marginBottom: '4px' }}>Sealed Recovery Capsule</h3>
           <p style={{ color: 'var(--ink)', fontSize: '13px', marginBottom: '16px' }}>
-            Export an offline, printable HTML recovery kit with instructions and Shamir custodian key shards.
+            Download the backup sealed to your KyRecovery public key. Only the custodian shares open it.
           </p>
 
           <a
-            href="/api/backup/export-kit"
-            target="_blank"
-            rel="noreferrer"
+            href="/api/backup/export-capsule"
+            download
             className="btn btn-secondary"
             style={{ textDecoration: 'none', display: 'inline-flex', marginBottom: '24px' }}
           >
             <Download size={16} />
-            <span>Export Printable Recovery Kit</span>
+            <span>Download sealed capsule (.kycap)</span>
           </a>
 
           <div style={{ borderTop: '1px solid var(--line)', paddingTop: '16px' }}>

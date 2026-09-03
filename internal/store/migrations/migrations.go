@@ -203,6 +203,12 @@ CREATE TABLE IF NOT EXISTS mfa_challenges (
 CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_at);
 `,
 	},
+	{
+		Version:  3,
+		Name:     "totp_last_counter",
+		SQLite:   `ALTER TABLE users ADD COLUMN totp_last_counter INTEGER NOT NULL DEFAULT 0;`,
+		Postgres: `ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_counter BIGINT NOT NULL DEFAULT 0;`,
+	},
 }
 
 // Run executes all pending migrations for the specified database driver.

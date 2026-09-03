@@ -1,16 +1,25 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/password"
+	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busness-app/ky-primitives/shamir"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -27,8 +36,11 @@ func main() {
 		case "backup-drill":
 			runBackupDrill(os.Args[2:])
 			return
-		case "export-recovery-kit":
-			runExportRecoveryKit(os.Args[2:])
+		case "export-capsule":
+			runExportCapsule(os.Args[2:])
+			return
+		case "restore":
+			runRestore(os.Args[2:])
 			return
 		case "version":
 			fmt.Println("ky_server_base v1.0.0 (Busnes.app base platform)")
@@ -62,7 +74,7 @@ func runServer() {
 			adminPass = crypto.RandomHex(12)
 			log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
 		}
-		hash, err := crypto.HashPassword(adminPass)
+		hash, err := password.Hash(adminPass)
 		if err != nil {
 			log.Fatalf("Failed to hash bootstrap admin password: %v", err)
 		}
@@ -115,10 +127,10 @@ func runServer() {
 func runInitAdmin(args []string) {
 	fs := flag.NewFlagSet("init-admin", flag.ExitOnError)
 	username := fs.String("username", "admin", "Admin username")
-	password := fs.String("password", "", "Admin password (minimum 12 characters)")
+	passwordFlag := fs.String("password", "", "Admin password (minimum 12 characters)")
 	_ = fs.Parse(args)
 
-	if *password == "" || len(*password) < 12 {
+	if *passwordFlag == "" || len(*passwordFlag) < 12 {
 		log.Fatal("Error: -password is required and must be at least 12 characters")
 	}
 
@@ -130,7 +142,7 @@ func runInitAdmin(args []string) {
 	}
 	defer st.Close()
 
-	hash, err := crypto.HashPassword(*password)
+	hash, err := password.Hash(*passwordFlag)
 	if err != nil {
 		log.Fatalf("Password hashing error: %v", err)
 	}
@@ -163,30 +175,44 @@ func runInitAdmin(args []string) {
 	log.Printf("✓ Admin user %q created successfully", *username)
 }
 
-func runBackupDrill(args []string) {
-	cfg, _ := config.LoadFromEnv()
-	ctx := context.Background()
+func loadRecoveryKey(ctx context.Context, cfg *config.Config, st store.Store) (backup.RecoveryKey, error) {
+	return backup.LoadRecoveryKey(ctx, cfg.Database.DataDir, st.Settings())
+}
 
+func collectFiles(cfg *config.Config) (*backup.PushBackupPayload, []backup.BackupFile) {
 	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
 	if err != nil {
-		log.Fatalf("Failed to build local payload: %v", err)
+		log.Fatalf("Failed to collect backup files: %v", err)
 	}
-
 	var files []backup.BackupFile
 	for _, f := range payload.Files {
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: []byte(f.DataBase64),
-			Mode: f.Mode,
-		})
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			log.Fatalf("Invalid backup file encoding: %v", err)
+		}
+		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
 	}
+	return payload, files
+}
 
-	capsule, key, err := backup.CreateCapsule(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
+func runBackupDrill(args []string) {
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to create capsule: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer st.Close()
 
-	result, err := backup.RunRestoreDrill(ctx, capsule, key)
+	payload, files := collectFiles(cfg)
+	pinned, err := loadRecoveryKey(ctx, cfg, st)
+	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
+		log.Fatalf("Recovery key: %v", err)
+	}
+	result, err := backup.RunRestoreDrill(ctx, cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, pinned)
 	if err != nil {
 		log.Fatalf("Drill execution error: %v", err)
 	}
@@ -204,27 +230,141 @@ func runBackupDrill(args []string) {
 	fmt.Println("==================================================")
 }
 
-func runExportRecoveryKit(args []string) {
-	cfg, _ := config.LoadFromEnv()
-	payload, _ := backup.BuildLocalPayload(cfg, "1.0.0")
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: []byte(f.DataBase64),
-			Mode: f.Mode,
-		})
-	}
+func runExportCapsule(args []string) {
+	fs := flag.NewFlagSet("export-capsule", flag.ExitOnError)
+	out := fs.String("out", "", "output path (default <capsule-id>.kycap in the current directory)")
+	_ = fs.Parse(args)
 
-	capsule, _, err := backup.CreateCapsule(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to generate capsule: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer st.Close()
+
+	key, err := loadRecoveryKey(ctx, cfg, st)
+	if err != nil {
+		log.Fatalf("Recovery key: %v", err)
+	}
+	payload, files := collectFiles(cfg)
+	raw, m, err := backup.Seal(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
+	if err != nil {
+		log.Fatalf("Seal: %v", err)
+	}
+	path := *out
+	if path == "" {
+		path = backup.FilenameSafe(m.CapsuleID) + ".kycap"
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		log.Fatalf("Write: %v", err)
+	}
+	log.Printf("✓ Capsule %s sealed to recovery key %s, written to %s (%d bytes)", m.CapsuleID, m.RecoveryKeyID, path, len(raw))
+}
+
+// restore is the product-side half of the ceremony: k custodian shares typed from their cards,
+// combined here, used once, and dropped. It refuses a capsule from another service before
+// touching the key, and prints the authenticated manifest so the operator can compare
+// CapsuleID and CreatedAt against kyrecovery's deposit record — Open proves integrity and
+// binding to this key, not which backup this is.
+func restore(capsulePath, targetDir, expectService string, shareStrings []string, stdout io.Writer) error {
+	raw, err := os.ReadFile(capsulePath)
+	if err != nil {
+		return err
+	}
+	peek, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		return err
+	}
+	if peek.ServiceName != expectService {
+		return fmt.Errorf("capsule is for service %q, this instance is %q; pass -service to override", peek.ServiceName, expectService)
 	}
 
-	html := backup.GenerateRecoveryKitHTML(capsule, cfg.Server.AppName, cfg.Server.AppURL)
-	outPath := "recovery_kit.html"
-	if err := os.WriteFile(outPath, []byte(html), 0600); err != nil {
-		log.Fatalf("Failed to write recovery kit: %v", err)
+	shares := make([]shamir.Share, 0, len(shareStrings))
+	for i, s := range shareStrings {
+		sh, err := shamir.ParseShare(s)
+		if err != nil {
+			return fmt.Errorf("share %d: %w", i+1, err)
+		}
+		shares = append(shares, sh)
 	}
-	log.Printf("✓ Emergency Disaster Recovery Kit written to %s", outPath)
+	priv, err := recoverykey.Combine(shares)
+	if err != nil {
+		return err
+	}
+
+	m, files, err := capsule.Open(raw, priv, targetDir)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Restored %d files from capsule %s\n  service:      %s (v%s)\n  created:      %s\n  recovery key: %s\n  payload hash: %s\n",
+		len(files), m.CapsuleID, m.ServiceName, m.AppVersion, m.CreatedAt.Format(time.RFC3339), m.RecoveryKeyID, m.PayloadHash)
+	return nil
+}
+
+// readShares takes custodian shares off a reader, one per non-empty line. They never travel
+// in argv: /proc/<pid>/cmdline is world-readable, argv is kept in shell history and copied by
+// every process monitor, and k of these lines rebuild the suite private key.
+func readShares(r io.Reader) ([]string, error) {
+	var shares []string
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		if line := strings.TrimSpace(sc.Text()); line != "" {
+			shares = append(shares, line)
+		}
+	}
+	return shares, sc.Err()
+}
+
+// stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.
+func stdinIsTerminal() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+func runRestore(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	capsulePath := fs.String("capsule", "", "path to the .kycap file")
+	target := fs.String("to", "", "empty directory to restore into")
+	service := fs.String("service", "", "expected service name (default: $KY_APP_NAME)")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, "Usage: ky_server_base restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
+			"Custodian shares are read from stdin, one ky2-... share per line, and never from\n"+
+			"the command line: argv is world-readable and lands in shell history.\n\n")
+		fs.PrintDefaults()
+	}
+	_ = fs.Parse(args)
+	if *capsulePath == "" || *target == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	if *service == "" {
+		// Not config.LoadFromEnv: it mints <DataDir>/encryption.key as a side effect, and a
+		// recovery host has no business growing a key of its own mid-ceremony.
+		*service = os.Getenv("KY_APP_NAME")
+	}
+	if *service == "" {
+		*service = config.DefaultAppName
+	}
+	if *service == "" {
+		log.Fatal("Error: -service is required when KY_APP_NAME is not set")
+	}
+
+	if stdinIsTerminal() {
+		fmt.Fprintln(os.Stderr, "Paste custodian shares, one per line, then Ctrl-D:")
+	}
+	shares, err := readShares(os.Stdin)
+	if err != nil {
+		log.Fatalf("Reading shares: %v", err)
+	}
+	if len(shares) == 0 {
+		log.Fatal("Error: no custodian shares on stdin")
+	}
+	if err := restore(*capsulePath, *target, *service, shares, os.Stdout); err != nil {
+		log.Fatalf("Restore failed: %v", err)
+	}
 }

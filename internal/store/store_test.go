@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -252,5 +253,30 @@ func TestAuditAndSettings(t *testing.T) {
 	val, err := st.Settings().GetSetting(ctx, "theme_default")
 	if err != nil || val != "patina" {
 		t.Fatalf("GetSetting failed: val=%s, err=%v", val, err)
+	}
+}
+
+func TestSpendTOTPCounterRefusesReplay(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	u := &store.User{ID: "usr_t", Username: "t", Role: "user", Status: "active", SSOProvider: "local"}
+	if err := st.Users().CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().SpendTOTPCounter(ctx, u.ID, 100); err != nil {
+		t.Fatalf("first spend: %v", err)
+	}
+	if err := st.Users().SpendTOTPCounter(ctx, u.ID, 100); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("replay: got %v, want ErrAlreadyExists", err)
+	}
+	if err := st.Users().SpendTOTPCounter(ctx, u.ID, 99); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("older counter: got %v, want ErrAlreadyExists", err)
+	}
+	if err := st.Users().SpendTOTPCounter(ctx, u.ID, 101); err != nil {
+		t.Fatalf("next counter: %v", err)
+	}
+	got, _ := st.Users().GetUserByID(ctx, u.ID)
+	if got.TOTPLastCounter != 101 {
+		t.Fatalf("stored counter %d, want 101", got.TOTPLastCounter)
 	}
 }

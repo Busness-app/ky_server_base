@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky_server_base/internal/config"
 )
+
+// encryptionKeyPath is where a restore drops the key that decrypts users.totp_secret_enc,
+// relative to the restore target: the same <DataDir>/encryption.key config.LoadFromEnv reads.
+const encryptionKeyPath = "data/encryption.key"
+
+// recoveryPubPath is where a restore drops the suite recovery public key, matching the
+// <DataDir>/recovery.pub that RecoveryKeyPath reads.
+const recoveryPubPath = "data/recovery.pub"
 
 // KyRecoveryClient implements the Zero-Code Pairing & Push client contract.
 type KyRecoveryClient struct {
@@ -67,13 +77,22 @@ func isPublicIP(ip net.IP) bool {
 	return ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
-// ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent API bearer token.
-func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (string, error) {
+// PairingResult is what a completed pairing yields: the bearer token for deposits and the
+// suite recovery public key with its custodian topology. A claim that returns no key is not a
+// completed pairing.
+type PairingResult struct {
+	APIToken string
+	Key      RecoveryKey
+}
+
+// ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent
+// API bearer token and the suite recovery public key to seal backups to.
+func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (PairingResult, error) {
 	serverURL = strings.TrimRight(serverURL, "/")
 	endpoint := fmt.Sprintf("%s/api/pairing/claim", serverURL)
 	parsedEndpoint, err := url.Parse(endpoint)
 	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
-		return "", errors.New("invalid recovery URL")
+		return PairingResult{}, errors.New("invalid recovery URL")
 	}
 
 	reqBody := map[string]string{
@@ -84,34 +103,49 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", err
+		return PairingResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("pairing claim request failed: %w", err)
+		return PairingResult{}, fmt.Errorf("pairing claim request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return "", fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
+		return PairingResult{}, fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
 	}
 
 	var claimResp struct {
-		APIToken string `json:"api_token"`
-		Status   string `json:"status"`
+		APIToken          string `json:"api_token"`
+		Status            string `json:"status"`
+		RecoveryPublicKey string `json:"recovery_public_key"` // std base64 of 1216 bytes
+		Threshold         int    `json:"threshold"`
+		TotalShares       int    `json:"total_shares"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&claimResp); err != nil {
-		return "", err
+		return PairingResult{}, err
 	}
-
 	if claimResp.APIToken == "" {
-		return "", errors.New("empty api_token in claim response")
+		return PairingResult{}, errors.New("empty api_token in claim response")
 	}
-
-	return claimResp.APIToken, nil
+	pkBytes, err := base64.StdEncoding.DecodeString(claimResp.RecoveryPublicKey)
+	if err != nil {
+		return PairingResult{}, fmt.Errorf("recovery_public_key: %w", err)
+	}
+	pk, err := recoverykey.ParsePublicKey(pkBytes)
+	if err != nil {
+		return PairingResult{}, fmt.Errorf("recovery_public_key: %w", err)
+	}
+	if !validTopology(claimResp.Threshold, claimResp.TotalShares) {
+		return PairingResult{}, fmt.Errorf("claim response: %d-of-%d is not a custodian topology", claimResp.Threshold, claimResp.TotalShares)
+	}
+	return PairingResult{
+		APIToken: claimResp.APIToken,
+		Key:      RecoveryKey{Public: pk, Threshold: claimResp.Threshold, TotalShares: claimResp.TotalShares},
+	}, nil
 }
 
 // PushBackupPayload defines the self-declaring backup ingest schema.
@@ -200,6 +234,31 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 			})
 			sqlitePaths = append(sqlitePaths, relPath)
 		}
+	}
+
+	// The encryption key rides along. users.totp_secret_enc is AES-GCM under it, so a capsule
+	// without it restores a database whose MFA secrets are unreadable forever. The capsule is
+	// sealed to the suite recovery public key; only k custodians together open it, which is
+	// exactly what that key is for. Spelled the way keyfile.LoadOrCreate reads it back.
+	if len(cfg.Security.EncryptionKey) != 32 {
+		return nil, fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to build a payload that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
+	}
+	files = append(files, PushBackupFile{
+		Path:       encryptionKeyPath,
+		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
+		Mode:       0600,
+	})
+
+	// The suite recovery public key rides along when this instance is paired. It is public and
+	// the capsule is sealed to that very key, so carrying it costs nothing; without it a restore
+	// comes back with the settings pin but no file, which reads as "not paired" and steers the
+	// operator into a re-pair. Unpaired instances simply omit it, so a drill still runs.
+	if pub, err := os.ReadFile(RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
+		files = append(files, PushBackupFile{
+			Path:       recoveryPubPath,
+			DataBase64: base64.StdEncoding.EncodeToString(pub),
+			Mode:       0600,
+		})
 	}
 
 	// Include config manifest snapshot

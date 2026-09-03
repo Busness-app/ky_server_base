@@ -14,9 +14,27 @@ stays in the parent plan. Everything here is the other repos.
 | [Module path migration](2026-09-02-module-path-migration.md) — **DONE 2026-09-02** | all eight Go repos | — |
 | [Capsule format interop](2026-09-02-capsule-format-interop.md) | shared gate | `ky-primitives` exists |
 | [kysignon-server migration](2026-09-02-kysignon-server-migration.md) | `kysignon-server` | capsule gate, for its Task 3 only |
-| [gridlock-server migration](2026-09-02-gridlock-server-migration.md) | `gridlock-server` | capsule gate, for its Task 3 only |
+| ~~[gridlock-server migration](2026-09-02-gridlock-server-migration.md)~~ — **superseded 2026-09-03** by the two plans below | `gridlock-server` | — |
+| [Scaffold adopts ky-primitives v0.4.0](2026-09-03-scaffold-adopts-ky-primitives.md) | `ky_server_base` | `ky-primitives v0.4.0` (tagged 2026-09-03) |
+| [gridlock re-fork](2026-09-03-gridlock-refork.md) | `gridlock-server` | the scaffold plan, merged |
 | [Audit chain convergence](2026-09-02-audit-chain-convergence.md) | `kyrecovery-server`, `kypassword-server`, `kybookmarks-server` | `ky-primitives` exists |
 | [Pairing spec, one home](2026-09-02-pairing-spec-one-home.md) | all nine, plus a loose copy | nothing |
+
+## What changed on 2026-09-03
+
+The library shipped `v0.4.0`: capsules are `kycap/3`, sealed to one suite-wide recovery
+public key with HPKE (X-Wing), and `Seal`/`Open` take `recoverykey` types instead of a raw
+key. That decision lives in `ky-primitives/docs/superpowers/specs/2026-09-03-recovery-keypair-design.md`
+and its consequences for products in the suite migration design's Phase 3. Two things here
+stopped being true:
+
+- The capsule-format-interop plan's premise — a per-capsule symmetric key returned by
+  `Seal`, dispatch across two containers — is retired. Its `kycap/1` reader and the tar
+  reader are gone from the library; nothing had been persisted in either by this scaffold or
+  gridlock, so nothing is orphaned. The plan stays as history.
+- The gridlock migration plan migrated gridlock independently. Phase 3 says the scaffold
+  goes first and gridlock is **re-forked** from it. The two 2026-09-03 plans above replace it;
+  gridlock's compat job is red on purpose until the re-fork lands.
 
 ## Why the audit work is one plan and not three
 

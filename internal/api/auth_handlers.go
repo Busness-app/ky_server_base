@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/password"
 	"github.com/Busness-app/ky_server_base/internal/auth"
 	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
@@ -83,7 +84,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !crypto.VerifyPassword(req.Password, user.PasswordHash) {
+	ok, err := password.Verify(req.Password, user.PasswordHash)
+	if err != nil || !ok {
 		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
@@ -163,8 +165,13 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.ValidateTOTP(string(secretBytes), req.Code) {
+	counter, ok := auth.ValidateTOTP(string(secretBytes), req.Code)
+	if !ok {
 		s.writeError(w, http.StatusUnauthorized, "Invalid TOTP verification code")
+		return
+	}
+	if err := s.store.Users().SpendTOTPCounter(r.Context(), user.ID, counter); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "TOTP code already used")
 		return
 	}
 

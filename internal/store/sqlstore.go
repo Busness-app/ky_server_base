@@ -140,7 +140,7 @@ func (u *userStore) scanUser(row interface{ Scan(...any) error }) (*User, error)
 		&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash,
 		&user.Role, &user.Status, &user.SSOProvider, &user.SSOSubject,
 		&user.TOTPSecretEnc, &user.TOTPEnabled, &user.RecoveryCodesHash,
-		&user.PushDeviceID, &user.MustChangePassword,
+		&user.PushDeviceID, &user.MustChangePassword, &user.TOTPLastCounter,
 		&user.CreatedAt, &user.UpdatedAt, &lastLogin,
 	)
 	if err != nil {
@@ -160,7 +160,7 @@ func (u *userStore) GetUserByID(ctx context.Context, id string) (*User, error) {
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE id = ?
 `)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, id))
@@ -171,7 +171,7 @@ func (u *userStore) GetUserByUsername(ctx context.Context, username string) (*Us
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE LOWER(username) = LOWER(?)
 `)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, username))
@@ -182,7 +182,7 @@ func (u *userStore) GetUserByEmail(ctx context.Context, email string) (*User, er
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE LOWER(email) = LOWER(?)
 `)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, email))
@@ -193,7 +193,7 @@ func (u *userStore) GetUserBySSO(ctx context.Context, provider, subject string) 
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users WHERE sso_provider = ? AND sso_subject = ?
 `)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, provider, subject))
@@ -249,6 +249,22 @@ func (u *userStore) UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, 
 	return nil
 }
 
+func (u *userStore) SpendTOTPCounter(ctx context.Context, userID string, counter int64) error {
+	q := u.store.rebind("UPDATE users SET totp_last_counter = ?, updated_at = ? WHERE id = ? AND totp_last_counter < ?")
+	res, err := u.store.db.ExecContext(ctx, q, counter, time.Now().UTC(), userID, counter)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrAlreadyExists
+	}
+	return nil
+}
+
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
 	q := u.store.rebind("DELETE FROM users WHERE id = ?")
 	res, err := u.store.db.ExecContext(ctx, q, id)
@@ -282,7 +298,7 @@ func (u *userStore) ListUsers(ctx context.Context, offset, limit int, search str
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users
 WHERE LOWER(username) LIKE ? OR LOWER(display_name) LIKE ? OR LOWER(email) LIKE ?
 ORDER BY created_at DESC LIMIT ? OFFSET ?`
@@ -293,7 +309,7 @@ ORDER BY created_at DESC LIMIT ? OFFSET ?`
 SELECT id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, totp_secret_enc, totp_enabled,
        recovery_codes_hash, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at
+       totp_last_counter, created_at, updated_at, last_login_at
 FROM users
 ORDER BY created_at DESC LIMIT ? OFFSET ?`
 		listArgs = []any{limit, offset}

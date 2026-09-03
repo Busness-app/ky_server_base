@@ -11,7 +11,7 @@ ky_server_base
 *.db
 *.db-wal
 *.db-shm
-recovery_kit.html
+*.kycap
 
 # Frontend
 web/node_modules/

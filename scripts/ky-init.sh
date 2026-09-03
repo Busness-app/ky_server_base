@@ -31,11 +31,11 @@ rsync -av --progress "$BASE_DIR/" "$TARGET_DIR/" \
     --exclude='data' \
     --exclude='backups' \
     --exclude='ky_server_base' \
-    --exclude='recovery_kit.html'
+    --exclude='*.kycap'
 
 cd "$TARGET_DIR"
 
-MODULE_OLD="github.com/Busness-app/ky_server_base"
+MODULE_OLD="$(cd "$BASE_DIR" && go list -m)"
 MODULE_NEW="github.com/Busness-app/${APP_NAME}"
 
 echo "🔄 Updating Go module paths (${MODULE_OLD} -> ${MODULE_NEW})..."
