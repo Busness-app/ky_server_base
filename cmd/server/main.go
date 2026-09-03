@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -28,8 +30,8 @@ func main() {
 		case "backup-drill":
 			runBackupDrill(os.Args[2:])
 			return
-		case "export-recovery-kit":
-			runExportRecoveryKit(os.Args[2:])
+		case "export-capsule":
+			runExportCapsule(os.Args[2:])
 			return
 		case "version":
 			fmt.Println("ky_server_base v1.0.0 (Busnes.app base platform)")
@@ -164,30 +166,44 @@ func runInitAdmin(args []string) {
 	log.Printf("✓ Admin user %q created successfully", *username)
 }
 
-func runBackupDrill(args []string) {
-	cfg, _ := config.LoadFromEnv()
-	ctx := context.Background()
+func loadRecoveryKey(ctx context.Context, cfg *config.Config, st store.Store) (backup.RecoveryKey, error) {
+	return backup.LoadRecoveryKey(ctx, cfg.Database.DataDir, st.Settings())
+}
 
+func collectFiles(cfg *config.Config) (*backup.PushBackupPayload, []backup.BackupFile) {
 	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
 	if err != nil {
-		log.Fatalf("Failed to build local payload: %v", err)
+		log.Fatalf("Failed to collect backup files: %v", err)
 	}
-
 	var files []backup.BackupFile
 	for _, f := range payload.Files {
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: []byte(f.DataBase64),
-			Mode: f.Mode,
-		})
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			log.Fatalf("Invalid backup file encoding: %v", err)
+		}
+		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
 	}
+	return payload, files
+}
 
-	capsule, key, err := backup.CreateCapsule(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
+func runBackupDrill(args []string) {
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to create capsule: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer st.Close()
 
-	result, err := backup.RunRestoreDrill(ctx, capsule, key)
+	payload, files := collectFiles(cfg)
+	pinned, err := loadRecoveryKey(ctx, cfg, st)
+	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
+		log.Fatalf("Recovery key: %v", err)
+	}
+	result, err := backup.RunRestoreDrill(ctx, cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, pinned)
 	if err != nil {
 		log.Fatalf("Drill execution error: %v", err)
 	}
@@ -205,27 +221,37 @@ func runBackupDrill(args []string) {
 	fmt.Println("==================================================")
 }
 
-func runExportRecoveryKit(args []string) {
-	cfg, _ := config.LoadFromEnv()
-	payload, _ := backup.BuildLocalPayload(cfg, "1.0.0")
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: []byte(f.DataBase64),
-			Mode: f.Mode,
-		})
-	}
+func runExportCapsule(args []string) {
+	fs := flag.NewFlagSet("export-capsule", flag.ExitOnError)
+	out := fs.String("out", "", "output path (default <capsule-id>.kycap in the current directory)")
+	_ = fs.Parse(args)
 
-	capsule, _, err := backup.CreateCapsule(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("Failed to generate capsule: %v", err)
+		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer st.Close()
 
-	html := backup.GenerateRecoveryKitHTML(capsule, cfg.Server.AppName, cfg.Server.AppURL)
-	outPath := "recovery_kit.html"
-	if err := os.WriteFile(outPath, []byte(html), 0600); err != nil {
-		log.Fatalf("Failed to write recovery kit: %v", err)
+	key, err := loadRecoveryKey(ctx, cfg, st)
+	if err != nil {
+		log.Fatalf("Recovery key: %v", err)
 	}
-	log.Printf("✓ Emergency Disaster Recovery Kit written to %s", outPath)
+	payload, files := collectFiles(cfg)
+	raw, m, err := backup.Seal(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
+	if err != nil {
+		log.Fatalf("Seal: %v", err)
+	}
+	path := *out
+	if path == "" {
+		path = m.CapsuleID + ".kycap"
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		log.Fatalf("Write: %v", err)
+	}
+	log.Printf("✓ Capsule %s sealed to recovery key %s, written to %s (%d bytes)", m.CapsuleID, m.RecoveryKeyID, path, len(raw))
 }

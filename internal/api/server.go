@@ -123,7 +123,7 @@ func (s *Server) routes() {
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
 	s.mux.HandleFunc("/api/backup/drill", s.requireAdmin(s.handleBackupDrill))
-	s.mux.HandleFunc("/api/backup/export-kit", s.requireAdmin(s.handleExportRecoveryKit))
+	s.mux.HandleFunc("/api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
 	s.mux.HandleFunc("/api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
 
 	// Settings & Theme. The read endpoint tiers its own payload by role.

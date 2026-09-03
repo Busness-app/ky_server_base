@@ -4,86 +4,94 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/Busness-app/ky_server_base/internal/backup"
 )
+
+// collectFiles is what both the drill and the export seal: the same payload the deposit path
+// will send, decoded from BuildLocalPayload's transport form.
+func (s *Server) collectFiles() (*backup.PushBackupPayload, []backup.BackupFile, error) {
+	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+	if err != nil {
+		return nil, nil, err
+	}
+	files := make([]backup.BackupFile, 0, len(payload.Files))
+	for _, f := range payload.Files {
+		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
+		if err != nil {
+			return nil, nil, err
+		}
+		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
+	}
+	return payload, files, nil
+}
 
 func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-
-	// 1. Build local payload
-	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+	payload, files, err := s.collectFiles()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
 	}
-
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
-			return
-		}
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: data,
-			Mode: f.Mode,
-		})
-	}
-
-	// 2. Encapsulate
-	capsule, key, err := backup.CreateCapsule(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to create backup capsule")
+	pinned, err := backup.LoadRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings())
+	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
+		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
 		return
 	}
-
-	// 3. Execute restore drill
-	drillResult, err := backup.RunRestoreDrill(r.Context(), capsule, key)
+	result, err := backup.RunRestoreDrill(r.Context(), s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, pinned)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to execute restore drill")
 		return
 	}
-
-	s.writeJSON(w, http.StatusOK, drillResult)
+	s.writeJSON(w, http.StatusOK, result)
 }
 
-func (s *Server) handleExportRecoveryKit(w http.ResponseWriter, r *http.Request) {
-	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
+// handleExportCapsule hands the operator the sealed capsule itself. Only the custodians'
+// shares open it, so the download is safe to store anywhere; kyrecovery is where it belongs.
+func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
+	payload, files, err := s.collectFiles()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
 	}
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			s.writeError(w, http.StatusInternalServerError, "Invalid backup file encoding")
-			return
-		}
-		files = append(files, backup.BackupFile{
-			Path: f.Path,
-			Data: data,
-			Mode: f.Mode,
-		})
-	}
-
-	capsule, _, err := backup.CreateCapsule(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, 2, 3)
-	if err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to generate capsule for kit")
+	key, err := backup.LoadRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings())
+	if errors.Is(err, backup.ErrNotPaired) {
+		s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery; no recovery key to seal to")
 		return
 	}
-
-	html := backup.GenerateRecoveryKitHTML(capsule, s.config.Server.AppName, s.config.Server.AppURL)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to load recovery key")
+		return
+	}
+	raw, m, err := backup.Seal(s.config.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to seal capsule")
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.kycap"`, filenameSafe(m.CapsuleID)))
+	w.Header().Set("X-Recovery-Key-ID", m.RecoveryKeyID)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(html))
+	_, _ = w.Write(raw)
+}
+
+// filenameSafe reduces a capsule ID to [A-Za-z0-9._-]. The ID embeds KY_APP_NAME, which an
+// operator sets, so it can carry a quote or a newline that would break out of the header.
+func filenameSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			return r
+		}
+		return '-'
+	}, s)
 }
 
 type RemotePairRequest struct {

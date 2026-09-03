@@ -78,7 +78,6 @@ type SCIMConfig struct {
 // BackupConfig holds parameters for KyBackup capsules & recovery drills.
 type BackupConfig struct {
 	StorageDir   string `json:"storage_dir"`
-	MasterKey    string `json:"master_key"`
 	AutoDrillDay int    `json:"auto_drill_day"` // day of week
 }
 
@@ -170,7 +169,6 @@ func LoadFromEnv() (*Config, error) {
 		},
 		Backup: BackupConfig{
 			StorageDir:   getEnv("KY_BACKUP_DIR", "./backups"),
-			MasterKey:    getEnv("KY_BACKUP_KEY", hex.EncodeToString(encryptionKey)),
 			AutoDrillDay: getEnvInt("KY_BACKUP_DRILL_DAY", 0), // Sunday
 		},
 		Captcha: CaptchaConfig{

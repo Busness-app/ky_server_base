@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/recoverykey"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,57 +29,64 @@ type DrillResult struct {
 	ErrorMessage string      `json:"error_message,omitempty"`
 }
 
-// RunRestoreDrill decapsulates the container into an ephemeral 0700 scratch directory, executes the recipe, and scrubs the directory.
-func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillResult, error) {
+// RunRestoreDrill proves the backup pipeline: it seals files exactly as a real backup would,
+// but to a throwaway keypair it then opens with, extracts into a 0700 scratch directory, and
+// runs the verification recipe. The product has no recovery private key, so this is the only
+// end-to-end check it can run alone. A separate check reports whether the suite key is pinned.
+func RunRestoreDrill(ctx context.Context, serviceName, appVersion string, files []BackupFile, deps, recipe map[string]any, pinned RecoveryKey) (*DrillResult, error) {
 	start := time.Now()
+	result := &DrillResult{Passed: true, Checks: make([]CheckItem, 0)}
+
+	// 0. Is this instance paired to the suite recovery key?
+	if pinned.Public.IsZero() {
+		result.Passed = false
+		result.Checks = append(result.Checks, CheckItem{Name: "Recovery Key", Passed: false, Message: ErrNotPaired.Error()})
+	} else {
+		result.Checks = append(result.Checks, CheckItem{Name: "Recovery Key", Passed: true,
+			Message: fmt.Sprintf("Sealing to recovery key %s (%d-of-%d custodians)", pinned.Public.ID()[:16], pinned.Threshold, pinned.TotalShares)})
+	}
+
+	// 1. Seal to a throwaway key and open with it. Topology is fixed here: it is display
+	// metadata, and the drill key has no custodians.
+	drillKey, err := recoverykey.Generate()
+	if err != nil {
+		return nil, fmt.Errorf("drill key: %w", err)
+	}
+	raw, _, err := capsule.Seal(serviceName, appVersion, toCapsuleFiles(files), deps, recipe, 2, 3, drillKey.Public())
+	if err != nil {
+		return nil, fmt.Errorf("drill seal: %w", err)
+	}
 
 	scratchDir, err := os.MkdirTemp("", "kyrec-drill-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create drill sandbox: %w", err)
 	}
-	defer func() {
-		_ = os.RemoveAll(scratchDir)
-	}()
-
+	defer func() { _ = os.RemoveAll(scratchDir) }()
 	_ = os.Chmod(scratchDir, 0700)
 
-	result := &DrillResult{
-		Passed: true,
-		Checks: make([]CheckItem, 0),
-	}
-
-	// 1. Decapsulate and extract
-	files, err := ExtractCapsule(capsule, key, scratchDir)
+	m, extracted, err := capsule.Open(raw, drillKey, scratchDir)
 	if err != nil {
 		result.Passed = false
-		result.ErrorMessage = fmt.Sprintf("Decapsulation failed: %v", err)
-		result.Checks = append(result.Checks, CheckItem{
-			Name:    "Directory Unpack",
-			Passed:  false,
-			Message: result.ErrorMessage,
-		})
+		result.ErrorMessage = fmt.Sprintf("Open failed: %v", err)
+		result.Checks = append(result.Checks, CheckItem{Name: "Directory Unpack", Passed: false, Message: result.ErrorMessage})
 		result.DurationMS = time.Since(start).Milliseconds()
 		return result, nil
 	}
 
 	var totalBytes int64
-	for _, f := range files {
-		totalBytes += int64(len(f.Data))
+	for _, f := range extracted {
+		totalBytes += int64(len(f.Content))
 	}
+	result.Checks = append(result.Checks, CheckItem{Name: "Directory Unpack", Passed: true,
+		Message: fmt.Sprintf("Extracted %d files (%d bytes)", len(extracted), totalBytes)})
 
-	result.Checks = append(result.Checks, CheckItem{
-		Name:    "Directory Unpack",
-		Passed:  true,
-		Message: fmt.Sprintf("Extracted %d files (%d bytes)", len(files), totalBytes),
-	})
-
-	recipe := capsule.Manifest.VerificationRecipe
-	if recipe == nil {
-		recipe = make(map[string]interface{})
+	recipeMap, _ := m.VerificationRecipe.(map[string]any)
+	if recipeMap == nil {
+		recipeMap = map[string]any{}
 	}
 
 	// 2. Verify Required Files
-	if reqFiles, ok := recipe["required_files"].([]interface{}); ok {
+	if reqFiles, ok := recipeMap["required_files"].([]interface{}); ok {
 		allFound := true
 		for _, rf := range reqFiles {
 			pathStr := fmt.Sprintf("%v", rf)
@@ -108,8 +117,8 @@ func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillR
 	}
 
 	// 3. SQLite Integrity Checks
-	if checkSQLite, _ := recipe["check_sqlite_integrity"].(bool); checkSQLite {
-		if sqlitePaths, ok := recipe["sqlite_paths"].([]interface{}); ok {
+	if checkSQLite, _ := recipeMap["check_sqlite_integrity"].(bool); checkSQLite {
+		if sqlitePaths, ok := recipeMap["sqlite_paths"].([]interface{}); ok {
 			for _, sp := range sqlitePaths {
 				dbPathRel := fmt.Sprintf("%v", sp)
 				dbPathFull, safe := drillPath(scratchDir, dbPathRel)
@@ -153,7 +162,7 @@ func RunRestoreDrill(ctx context.Context, capsule *Capsule, key []byte) (*DrillR
 	}
 
 	// 4. Check Environment Variables
-	if expEnv, ok := recipe["expected_env"].([]interface{}); ok && len(expEnv) > 0 {
+	if expEnv, ok := recipeMap["expected_env"].([]interface{}); ok && len(expEnv) > 0 {
 		for _, name := range expEnv {
 			envName := fmt.Sprint(name)
 			_, found := os.LookupEnv(envName)
