@@ -3,6 +3,7 @@ module github.com/Busness-app/ky_server_base
 go 1.26.6
 
 require (
+	github.com/Busness-app/ky-primitives v0.4.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/elimity-com/scim v0.0.0-20260728105928-2641426a1539
 	github.com/google/uuid v1.6.0
@@ -13,7 +14,6 @@ require (
 )
 
 require (
-	github.com/Busness-app/ky-primitives v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
