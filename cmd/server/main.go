@@ -6,14 +6,19 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/password"
+	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busness-app/ky-primitives/shamir"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -32,6 +37,9 @@ func main() {
 			return
 		case "export-capsule":
 			runExportCapsule(os.Args[2:])
+			return
+		case "restore":
+			runRestore(os.Args[2:])
 			return
 		case "version":
 			fmt.Println("ky_server_base v1.0.0 (Busnes.app base platform)")
@@ -254,4 +262,73 @@ func runExportCapsule(args []string) {
 		log.Fatalf("Write: %v", err)
 	}
 	log.Printf("✓ Capsule %s sealed to recovery key %s, written to %s (%d bytes)", m.CapsuleID, m.RecoveryKeyID, path, len(raw))
+}
+
+// restore is the product-side half of the ceremony: k custodian shares typed from their cards,
+// combined here, used once, and dropped. It refuses a capsule from another service before
+// touching the key, and prints the authenticated manifest so the operator can compare
+// CapsuleID and CreatedAt against kyrecovery's deposit record — Open proves integrity and
+// binding to this key, not which backup this is.
+func restore(capsulePath, targetDir, expectService string, shareStrings []string, stdout io.Writer) error {
+	raw, err := os.ReadFile(capsulePath)
+	if err != nil {
+		return err
+	}
+	peek, err := capsule.ReadUnverifiedManifest(raw)
+	if err != nil {
+		return err
+	}
+	if peek.ServiceName != expectService {
+		return fmt.Errorf("capsule is for service %q, this instance is %q; pass -service to override", peek.ServiceName, expectService)
+	}
+
+	shares := make([]shamir.Share, 0, len(shareStrings))
+	for i, s := range shareStrings {
+		sh, err := shamir.ParseShare(s)
+		if err != nil {
+			return fmt.Errorf("share %d: %w", i+1, err)
+		}
+		shares = append(shares, sh)
+	}
+	priv, err := recoverykey.Combine(shares)
+	if err != nil {
+		return err
+	}
+
+	m, files, err := capsule.Open(raw, priv, targetDir)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Restored %d files from capsule %s\n  service:      %s (v%s)\n  created:      %s\n  recovery key: %s\n  payload hash: %s\n",
+		len(files), m.CapsuleID, m.ServiceName, m.AppVersion, m.CreatedAt.Format(time.RFC3339), m.RecoveryKeyID, m.PayloadHash)
+	return nil
+}
+
+type multiFlag []string
+
+func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
+func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+func runRestore(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	capsulePath := fs.String("capsule", "", "path to the .kycap file")
+	target := fs.String("to", "", "empty directory to restore into")
+	service := fs.String("service", "", "expected service name (default: KY_APP_NAME)")
+	var shares multiFlag
+	fs.Var(&shares, "share", "one custodian share (ky2-...); repeat for each")
+	_ = fs.Parse(args)
+	if *capsulePath == "" || *target == "" || len(shares) == 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	if *service == "" {
+		cfg, err := config.LoadFromEnv()
+		if err != nil {
+			log.Fatalf("Failed to load configuration: %v", err)
+		}
+		*service = cfg.Server.AppName
+	}
+	if err := restore(*capsulePath, *target, *service, shares, os.Stdout); err != nil {
+		log.Fatalf("Restore failed: %v", err)
+	}
 }
