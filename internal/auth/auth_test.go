@@ -3,26 +3,38 @@ package auth_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Busness-app/ky-primitives/totp"
 	"github.com/Busness-app/ky_server_base/internal/auth"
 )
 
-func TestTOTPGenerationAndValidation(t *testing.T) {
+func TestTOTPValidateReturnsCounter(t *testing.T) {
 	secret, err := auth.GenerateTOTPSecret()
 	if err != nil {
-		t.Fatalf("failed to generate TOTP secret: %v", err)
+		t.Fatal(err)
 	}
-
-	uri := auth.GenerateTOTPURL("BusnesApp", "alice", secret)
-	if len(uri) == 0 {
-		t.Errorf("expected non-empty TOTP URL")
+	if uri := auth.GenerateTOTPURL("BusnesApp", "alice", secret); !strings.HasPrefix(uri, "otpauth://totp/") {
+		t.Fatalf("uri %q", uri)
 	}
-
-	// Invalid code should fail
-	if auth.ValidateTOTP(secret, "000000") && auth.ValidateTOTP(secret, "999999") {
-		// Both couldn't possibly be valid at once
-		t.Errorf("expected invalid TOTP to fail")
+	now := time.Now()
+	code, err := totp.Code(secret, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counter, ok := auth.ValidateTOTP(secret, code)
+	if !ok {
+		t.Fatal("fresh code rejected")
+	}
+	if want := now.Unix() / totp.Period; counter < want-1 || counter > want+1 {
+		t.Fatalf("counter %d not within one step of %d", counter, want)
+	}
+	if _, ok := auth.ValidateTOTP(secret, "000000"); ok {
+		if _, ok2 := auth.ValidateTOTP(secret, "999999"); ok2 {
+			t.Fatal("two arbitrary codes both valid")
+		}
 	}
 }
 

@@ -35,6 +35,9 @@ type UserStore interface {
 	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
 	UpdateRecoveryCodes(ctx context.Context, userID, oldHashes, newHashes string) error
+	// SpendTOTPCounter records counter as used. It returns ErrAlreadyExists when counter is
+	// not greater than the stored one, which is how a replayed code inside the skew window fails.
+	SpendTOTPCounter(ctx context.Context, userID string, counter int64) error
 	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)

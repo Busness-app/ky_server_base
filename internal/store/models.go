@@ -17,6 +17,7 @@ type User struct {
 	SSOSubject         string     `json:"sso_subject,omitempty"`
 	TOTPSecretEnc      string     `json:"-"` // AES-256-GCM encrypted
 	TOTPEnabled        bool       `json:"totp_enabled"`
+	TOTPLastCounter    int64      `json:"-"` // last RFC 6238 counter accepted; refuses replay inside the skew window
 	RecoveryCodesHash  string     `json:"-"` // JSON array of sha256 hashes
 	PushDeviceID       string     `json:"push_device_id,omitempty"`
 	MustChangePassword bool       `json:"must_change_password"`

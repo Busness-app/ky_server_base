@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/password"
+	"github.com/Busness-app/ky-primitives/totp"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/auth"
 	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
 	"github.com/Busness-app/ky_server_base/internal/testdb"
 )
@@ -183,5 +186,36 @@ func TestCookieAuthenticatedWriteRequiresCSRF(t *testing.T) {
 	srv.ServeHTTP(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("write without CSRF got %d, want 403", w.Code)
+	}
+}
+
+func TestMFATOTPRefusesReplay(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	secret, _ := totp.GenerateSecret()
+	enc, _ := crypto.EncryptAESGCM([]byte(secret), cfg.Security.EncryptionKey)
+	_ = st.Users().CreateUser(ctx, &store.User{
+		ID: "usr_mfa", Username: "mfa", Role: "user", Status: "active", SSOProvider: "local",
+		TOTPEnabled: true, TOTPSecretEnc: enc,
+	})
+	code, _ := totp.Code(secret, time.Now())
+
+	post := func() int {
+		raw := crypto.RandomHex(32)
+		_ = st.Sessions().CreateMFAChallenge(ctx, &store.MFAChallenge{
+			TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: "usr_mfa", ExpiresAt: time.Now().Add(time.Minute),
+		})
+		body, _ := json.Marshal(map[string]string{"mfa_token": raw, "code": code})
+		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := post(); got != http.StatusOK {
+		t.Fatalf("first use: %d", got)
+	}
+	if got := post(); got != http.StatusUnauthorized {
+		t.Fatalf("replay: got %d, want 401", got)
 	}
 }

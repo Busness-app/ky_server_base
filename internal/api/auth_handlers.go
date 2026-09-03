@@ -165,8 +165,13 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !auth.ValidateTOTP(string(secretBytes), req.Code) {
+	counter, ok := auth.ValidateTOTP(string(secretBytes), req.Code)
+	if !ok {
 		s.writeError(w, http.StatusUnauthorized, "Invalid TOTP verification code")
+		return
+	}
+	if err := s.store.Users().SpendTOTPCounter(r.Context(), user.ID, counter); err != nil {
+		s.writeError(w, http.StatusUnauthorized, "TOTP code already used")
 		return
 	}
 
