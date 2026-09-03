@@ -17,11 +17,15 @@ import (
 // on disk disagree, so refuse rather than seal a capsule nobody's custodians can open.
 const errRecoveryKeyMismatch = "Recovery key file does not match the pinned key ID; refusing to seal"
 
-// collectFiles is what both the drill and the export seal: the same payload the deposit path
-// will send, decoded from BuildLocalPayload's transport form.
+// collectFiles is what both the drill and the export seal: the local payload plus the
+// sealed-only members, decoded from BuildLocalPayload's transport form. Everything it returns
+// goes into a capsule, never onto the wire in the clear.
 func (s *Server) collectFiles() (*backup.PushBackupPayload, []backup.BackupFile, error) {
 	payload, err := backup.BuildLocalPayload(s.config, "1.0.0")
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := backup.AppendSealedOnlyFiles(s.config, payload); err != nil {
 		return nil, nil, err
 	}
 	files := make([]backup.BackupFile, 0, len(payload.Files))

@@ -85,5 +85,11 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, pairing)
+	// The poll route is unauthenticated: project, never marshal the record. Secret, code,
+	// user_id and push_token stay on the server.
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"status":      pairing.Status,
+		"expires_at":  pairing.ExpiresAt.Unix(),
+		"device_name": pairing.DeviceName,
+	})
 }

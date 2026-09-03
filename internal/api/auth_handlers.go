@@ -139,7 +139,9 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+	// Key on the client and a fixed-width digest: the raw token is caller-supplied and up to
+	// the 1 MiB body cap, so it must never become a map key.
+	if !s.allowAttempt("mfa:"+requestIP(r)+":"+crypto.SHA256Hex([]byte(req.MFAToken)), 3, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}
@@ -204,7 +206,9 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+	// Key on the client and a fixed-width digest: the raw token is caller-supplied and up to
+	// the 1 MiB body cap, so it must never become a map key.
+	if !s.allowAttempt("mfa:"+requestIP(r)+":"+crypto.SHA256Hex([]byte(req.MFAToken)), 3, 5*time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}

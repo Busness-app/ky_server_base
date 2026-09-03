@@ -44,12 +44,14 @@ type MFAChallenge struct {
 
 // DevicePairing represents a 90-second ephemeral session to link mobile/PWA wrappers.
 type DevicePairing struct {
-	Code       string    `json:"code"`   // 6-digit verification code
-	Secret     string    `json:"secret"` // Ephemeral secret for exchange
+	// Code, Secret and PushToken never serialise: this record is reached by unauthenticated
+	// pair/verify and pair/poll callers. A handler that must return one needs its own type.
+	Code       string    `json:"-"` // 6-digit verification code
+	Secret     string    `json:"-"` // Ephemeral secret for exchange
 	UserID     string    `json:"user_id,omitempty"`
 	DeviceName string    `json:"device_name,omitempty"`
 	Platform   string    `json:"platform,omitempty"` // "android", "ios", "pwa", "desktop"
-	PushToken  string    `json:"push_token,omitempty"`
+	PushToken  string    `json:"-"`
 	Status     string    `json:"status"` // "pending", "approved", "consumed", "expired"
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at"`

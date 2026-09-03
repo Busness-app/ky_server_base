@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -380,5 +381,105 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "64 MiB per file") {
 		t.Errorf("body does not name the limit: %s", w.Body.String())
+	}
+}
+
+// The MFA routes are unauthenticated and the token is caller-supplied up to the 1 MiB body
+// cap. Keying the limiter on it let a caller pin arbitrary memory for the whole window.
+func TestMFALimiterKeyIsBounded(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+
+	for i := 0; i < 500; i++ {
+		token := strings.Repeat("a", 700_000) + strconv.Itoa(i)
+		body, _ := json.Marshal(map[string]string{"mfa_token": token, "code": "000000"})
+		req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.9:41000"
+		srv.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	keys := api.AttemptKeysForTest(srv)
+	if len(keys) > api.AttemptsCapForTest {
+		t.Errorf("limiter holds %d keys, want at most %d", len(keys), api.AttemptsCapForTest)
+	}
+	total := 0
+	for _, k := range keys {
+		if len(k) >= 200 {
+			t.Fatalf("limiter key is %d bytes; keys must not carry the request body", len(k))
+		}
+		total += len(k)
+	}
+	if total >= 200*api.AttemptsCapForTest {
+		t.Errorf("limiter retains %d key bytes, which tracks the input size", total)
+	}
+
+	// Fill the limiter past the cap with live windows. A full map must evict, not refuse:
+	// refusing would let one caller lock every new client out of the auth routes.
+	for i := 0; i < api.AttemptsCapForTest+50; i++ {
+		api.AllowAttemptForTest(srv, "filler:"+strconv.Itoa(i), 3, 5*time.Minute)
+	}
+	if n := len(api.AttemptKeysForTest(srv)); n > api.AttemptsCapForTest {
+		t.Fatalf("limiter grew to %d keys, want at most %d", n, api.AttemptsCapForTest)
+	}
+
+	body, _ := json.Marshal(map[string]string{"mfa_token": "a-fresh-token", "code": "000000"})
+	req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "198.51.100.7:2000"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code == http.StatusTooManyRequests {
+		t.Fatal("a full limiter locked out a new client; it must evict, not refuse")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("fresh client expected 401 from MFA validation, got %d: %s", w.Code, w.Body.String())
+	}
+	if n := len(api.AttemptKeysForTest(srv)); n > api.AttemptsCapForTest {
+		t.Errorf("limiter holds %d keys after admitting a new client, want at most %d", n, api.AttemptsCapForTest)
+	}
+}
+
+// The poll route is unauthenticated: anyone holding a secret must not learn the code, the
+// user behind it, or the device's push token.
+func TestPairPollProjectsTheRecord(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+
+	pairing := &store.DevicePairing{
+		Code:       "424242",
+		Secret:     "s3cr3t-pairing-secret",
+		UserID:     "usr_alice",
+		DeviceName: "Alice Phone",
+		Platform:   "android",
+		PushToken:  "push-token-value",
+		Status:     "pending",
+		CreatedAt:  time.Now().UTC(),
+		ExpiresAt:  time.Now().UTC().Add(90 * time.Second),
+	}
+	if err := st.Devices().CreatePairing(context.Background(), pairing); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/devices/pair/poll?secret="+pairing.Secret, nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("poll expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	for _, leak := range []string{"secret", "push_token", "code", "user_id", pairing.Secret, pairing.Code, pairing.PushToken, pairing.UserID} {
+		if strings.Contains(body, leak) {
+			t.Errorf("poll response leaks %q: %s", leak, body)
+		}
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "pending" || got["device_name"] != "Alice Phone" {
+		t.Errorf("poll response lost the fields the client needs: %v", got)
+	}
+	if _, ok := got["expires_at"]; !ok {
+		t.Errorf("poll response has no expires_at: %v", got)
 	}
 }

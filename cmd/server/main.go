@@ -184,6 +184,10 @@ func collectFiles(cfg *config.Config) (*backup.PushBackupPayload, []backup.Backu
 	if err != nil {
 		log.Fatalf("Failed to collect backup files: %v", err)
 	}
+	// Every caller of this seals; the sealed-only members are safe here and nowhere else.
+	if err := backup.AppendSealedOnlyFiles(cfg, payload); err != nil {
+		log.Fatalf("Failed to collect backup files: %v", err)
+	}
 	var files []backup.BackupFile
 	for _, f := range payload.Files {
 		data, err := base64.StdEncoding.DecodeString(f.DataBase64)

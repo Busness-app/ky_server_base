@@ -30,14 +30,53 @@ func payloadConfig(t *testing.T) (*config.Config, []byte) {
 	return cfg, key
 }
 
-// The encryption key must ride in the capsule: users.totp_secret_enc is AES-GCM under it, so
-// a restore without it hands the operator a database whose MFA secrets are gone for good.
-func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
-	cfg, key := payloadConfig(t)
+// sealingPayload is what the sealing collectors assemble: the local payload plus the members
+// that may only travel inside a capsule.
+func sealingPayload(t *testing.T, cfg *config.Config) *backup.PushBackupPayload {
+	t.Helper()
 	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := backup.AppendSealedOnlyFiles(cfg, payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+// PushBackup sends the payload in the clear, so BuildLocalPayload alone must carry neither the
+// encryption key nor the recovery public key.
+func TestPushPayloadCarriesNoPlaintextKey(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	cfg.Database.DataDir = t.TempDir()
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := keyfile.Store(backup.RecoveryKeyPath(cfg.Database.DataDir), priv.Public().Bytes(), keyfile.Raw); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := payload.VerificationRecipe["required_files"].([]string)
+	for _, path := range []string{"data/encryption.key", "data/recovery.pub"} {
+		if findFile(payload.Files, path) != nil {
+			t.Errorf("the push payload carries %s in plaintext", path)
+		}
+		if slices.Contains(req, path) {
+			t.Errorf("required_files: got %v, want no %s", req, path)
+		}
+	}
+}
+
+// The encryption key must ride in the capsule: users.totp_secret_enc is AES-GCM under it, so
+// a restore without it hands the operator a database whose MFA secrets are gone for good.
+func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
+	cfg, key := payloadConfig(t)
+	payload := sealingPayload(t, cfg)
 	var found bool
 	for _, f := range payload.Files {
 		if f.Path != "data/encryption.key" {
@@ -68,10 +107,7 @@ func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
 // restored tree must hold a key file keyfile can read back byte for byte.
 func TestSealedCapsuleRestoresTheEncryptionKey(t *testing.T) {
 	cfg, key := payloadConfig(t)
-	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	payload := sealingPayload(t, cfg)
 	files := make([]backup.BackupFile, 0, len(payload.Files))
 	for _, f := range payload.Files {
 		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
@@ -121,10 +157,7 @@ func TestPayloadCarriesTheRecoveryPublicKeyWhenPaired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	unpaired, err := backup.BuildLocalPayload(cfg, "1.0.0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	unpaired := sealingPayload(t, cfg)
 	if f := findFile(unpaired.Files, "data/recovery.pub"); f != nil {
 		t.Error("unpaired instance shipped a recovery.pub")
 	}
@@ -135,10 +168,7 @@ func TestPayloadCarriesTheRecoveryPublicKeyWhenPaired(t *testing.T) {
 	if err := keyfile.Store(backup.RecoveryKeyPath(cfg.Database.DataDir), priv.Public().Bytes(), keyfile.Raw); err != nil {
 		t.Fatal(err)
 	}
-	paired, err := backup.BuildLocalPayload(cfg, "1.0.0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	paired := sealingPayload(t, cfg)
 	f := findFile(paired.Files, "data/recovery.pub")
 	if f == nil {
 		t.Fatal("paired instance has no data/recovery.pub in the payload")
@@ -167,10 +197,14 @@ func findFile(files []backup.PushBackupFile, path string) *backup.PushBackupFile
 	return nil
 }
 
-func TestBuildLocalPayloadRefusesAShortKey(t *testing.T) {
+func TestAppendSealedOnlyFilesRefusesAShortKey(t *testing.T) {
 	cfg, _ := payloadConfig(t)
 	cfg.Security.EncryptionKey = cfg.Security.EncryptionKey[:16]
-	if _, err := backup.BuildLocalPayload(cfg, "1.0.0"); err == nil {
+	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.AppendSealedOnlyFiles(cfg, payload); err == nil {
 		t.Fatal("a 16-byte encryption key was accepted")
 	}
 }
