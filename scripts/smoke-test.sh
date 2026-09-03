@@ -63,8 +63,13 @@ echo "==> CLI subcommands"
 check "version exits 0" "$("$BIN" version >/dev/null 2>&1 && echo 0 || echo 1)" "0"
 contains "version prints name" "$("$BIN" version)" "ky_server_base"
 
+# The drill seals to a throwaway key and reopens it, so the pipeline runs even unpaired.
+# Nothing here pairs with KyRecovery, so the suite key check must fail and say so.
 DRILL_OUT="$(KY_DATA_DIR="$WORK/data" KY_BACKUP_DIR="$WORK/backups" "$BIN" backup-drill)"
-contains "backup-drill passes" "$DRILL_OUT" "PASSED"
+contains "backup-drill seals and reopens the payload" "$DRILL_OUT" "Directory Unpack: Extracted"
+contains "backup-drill verifies the required files" "$DRILL_OUT" "required files verified"
+contains "unpaired backup-drill reports the missing recovery key" "$DRILL_OUT" "Recovery Key: backup: no recovery public key"
+contains "unpaired backup-drill does not claim success" "$DRILL_OUT" "Status:   FAILED"
 
 check "init-admin rejects short password" \
   "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password short >/dev/null 2>&1 && echo 0 || echo 1)" "1"
@@ -84,7 +89,7 @@ check "login rejects GET" "$(status "$BASE/api/auth/login")" "405"
 check "pow challenge issued" "$(status "$BASE/api/auth/pow-challenge")" "200"
 contains "unauthenticated /me reports not authenticated" "$(curl -s "$BASE/api/auth/me")" '"authenticated":false' 
 check "scim rejects missing bearer" "$(status "$BASE/scim/v2/Users")" "401"
-check "anonymous cannot export recovery kit" "$(status "$BASE/api/backup/export-kit")" "401"
+check "anonymous cannot export the capsule" "$(status "$BASE/api/backup/export-capsule")" "401"
 check "anonymous cannot run backup drill" "$(status -X POST "$BASE/api/backup/drill")" "401"
 check "anonymous cannot pair remote recovery" "$(status -X POST "$BASE/api/backup/pair-remote")" "401"
 check "anonymous cannot set site theme" "$(status -X POST -H 'Content-Type: application/json' -d '{"theme":"oled"}' "$BASE/api/settings/theme")" "401"
@@ -115,7 +120,11 @@ contains "anonymous settings hide extra_settings" \
 contains "anonymous settings hide db_driver" \
   "$(if echo "$ANON_SETTINGS" | grep -q 'db_driver'; then echo leaked; else echo hidden; fi)" "hidden"
 contains "admin settings include db_driver" "$(curl -s -b "$WORK/cookies" "$BASE/api/settings")" '"db_driver"'
-check "admin can export recovery kit" "$(status -b "$WORK/cookies" "$BASE/api/backup/export-kit")" "200"
+# Unpaired, so the honest assertion is the documented refusal. 412 cannot come from the SPA
+# fallback, which answers 200 for anything it does not recognise.
+check "admin export-capsule refuses while unpaired" "$(status -b "$WORK/cookies" "$BASE/api/backup/export-capsule")" "412"
+contains "export-capsule says why it refused" \
+  "$(curl -s -b "$WORK/cookies" "$BASE/api/backup/export-capsule")" "Not paired with KyRecovery"
 CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
 check "cookie write rejects missing CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/devices/pair/init")" "403"
 check "device pairing init" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")" "200"

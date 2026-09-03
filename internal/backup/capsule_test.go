@@ -100,3 +100,28 @@ func TestDrillFailsARequiredFileThatIsMissing(t *testing.T) {
 		t.Fatal("drill passed with a missing required file")
 	}
 }
+
+// A payload the library refuses to seal is a drill finding, not a drill error: reporting it
+// as an error would lose the Recovery Key check and answer the operator with a 500.
+func TestDrillReportsASealItCannotPerform(t *testing.T) {
+	_, key := testKey(t)
+	res, err := backup.RunRestoreDrill(context.Background(), "busnes_app", "1.0.0", nil, nil, nil, key)
+	if err != nil {
+		t.Fatalf("want a result, got err %v", err)
+	}
+	if res == nil || res.Passed {
+		t.Fatalf("drill passed with nothing to seal: %+v", res)
+	}
+	var sawSeal bool
+	for _, c := range res.Checks {
+		if c.Name == "Seal" && !c.Passed {
+			sawSeal = true
+		}
+	}
+	if !sawSeal {
+		t.Fatalf("no failed Seal check in %+v", res.Checks)
+	}
+	if res.ErrorMessage == "" {
+		t.Fatal("empty ErrorMessage")
+	}
+}

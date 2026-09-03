@@ -54,7 +54,14 @@ func RunRestoreDrill(ctx context.Context, serviceName, appVersion string, files 
 	}
 	raw, _, err := capsule.Seal(serviceName, appVersion, toCapsuleFiles(files), deps, recipe, 2, 3, drillKey.Public())
 	if err != nil {
-		return nil, fmt.Errorf("drill seal: %w", err)
+		// A payload Seal refuses — no files, or one too large — is the drill's finding to
+		// report, not an error to hand the caller. Erroring here would throw away the
+		// Recovery Key check already computed above and answer the operator with a 500.
+		result.Passed = false
+		result.ErrorMessage = fmt.Sprintf("Seal failed: %v", err)
+		result.Checks = append(result.Checks, CheckItem{Name: "Seal", Passed: false, Message: result.ErrorMessage})
+		result.DurationMS = time.Since(start).Milliseconds()
+		return result, nil
 	}
 
 	scratchDir, err := os.MkdirTemp("", "kyrec-drill-*")
