@@ -871,7 +871,22 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	if fake.err != nil {
 		t.Fatalf("the upload context was cancelled with the request: %v", fake.err)
 	}
-	if _, ok, _ := backup.LastDeposit(ctx, st.Settings()); !ok {
+	rcpt, ok, _ := backup.LastDeposit(ctx, st.Settings())
+	if !ok {
 		t.Fatal("no receipt recorded after the request went away")
+	}
+	// The audit row must survive the dropped connection too, and name the admin who acted.
+	records, _, err := st.Audit().ListAuditRecords(ctx, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audited bool
+	for _, rec := range records {
+		if rec.Action == "backup.deposited" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Error("no backup.deposited audit record for the acting admin after the request went away")
 	}
 }

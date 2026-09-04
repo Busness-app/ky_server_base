@@ -116,9 +116,14 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(depositWriteBudget))
-	rcpt, m, err := backup.DepositBackup(context.WithoutCancel(r.Context()), s.config, s.store.Settings(), s.recovery, appVersion)
+	// The acting admin is resolved while the request is still live; the audit row is written
+	// on the same detached context as the deposit, so a dropped connection cannot decide
+	// whether the row exists.
+	actor := s.actorID(r)
+	ctx := context.WithoutCancel(r.Context())
+	rcpt, m, err := backup.DepositBackup(ctx, s.config, s.store.Settings(), s.recovery, appVersion)
 	if err != nil {
-		s.auditBackup(r, "backup.deposit_failed", m.CapsuleID, err.Error())
+		s.auditBackup(ctx, actor, r, "backup.deposit_failed", m.CapsuleID, err.Error())
 		switch {
 		case errors.Is(err, backup.ErrNotPaired):
 			s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery")
@@ -137,26 +142,33 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	s.auditBackup(r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest)
+	s.auditBackup(ctx, actor, r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest)
 	s.writeJSON(w, http.StatusOK, rcpt)
 }
 
 // auditBackup records a backup event against the acting admin. Details never carry the
 // token or capsule bytes, and both text fields are bounded and printable before they are
 // stored: a resource may be an operator-typed URL and details may quote a remote body.
-func (s *Server) auditBackup(r *http.Request, action, resource, details string) {
+func (s *Server) auditBackup(ctx context.Context, userID string, r *http.Request, action, resource, details string) {
 	resource, details = backup.AuditSafe(resource), backup.AuditSafe(details)
-	var userID string
-	if user, _, err := s.sessions.AuthenticateRequest(r); err == nil {
-		userID = user.ID
-	}
-	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+	if err := s.store.Audit().LogAudit(ctx, &store.AuditRecord{
 		UserID:    userID,
 		Action:    action,
 		Resource:  resource,
 		Details:   details,
 		IPAddress: s.requestIP(r),
-	})
+	}); err != nil {
+		log.Printf("[BACKUP] audit %s for %s not recorded: %v", action, resource, err)
+	}
+}
+
+// actorID is the session user behind an admin request, resolved while the request is live.
+func (s *Server) actorID(r *http.Request) string {
+	user, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		return ""
+	}
+	return user.ID
 }
 
 type RemotePairRequest struct {
@@ -180,14 +192,14 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 	// capsule's manifest is checked against, so it is the same AppName the collectors seal under.
 	result, err := s.recovery.ClaimPairing(r.Context(), req.RecoveryURL, req.PairingCode, s.config.Server.AppName, s.config.Server.AppName)
 	if err != nil {
-		s.auditBackup(r, "backup.pair_failed", req.RecoveryURL, err.Error())
+		s.auditBackup(r.Context(), s.actorID(r), r, "backup.pair_failed", req.RecoveryURL, err.Error())
 		s.writeError(w, http.StatusBadRequest, "Recovery pairing failed")
 		return
 	}
 
 	if err := backup.StoreRecoveryKey(r.Context(), s.config.Database.DataDir, s.store.Settings(), result.Key); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			s.auditBackup(r, "backup.pair_failed", req.RecoveryURL, "already paired to a different recovery key")
+			s.auditBackup(r.Context(), s.actorID(r), r, "backup.pair_failed", req.RecoveryURL, "already paired to a different recovery key")
 			s.writeError(w, http.StatusConflict, "Already paired to a different recovery key")
 			return
 		}
@@ -198,7 +210,7 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}
-	s.auditBackup(r, "backup.paired", req.RecoveryURL, "recovery_key_id="+result.Key.Public.ID())
+	s.auditBackup(r.Context(), s.actorID(r), r, "backup.paired", req.RecoveryURL, "recovery_key_id="+result.Key.Public.ID())
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"paired":          true,
