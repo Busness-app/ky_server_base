@@ -272,8 +272,8 @@ func TestCollectSealableRefusesADriverItCannotSnapshot(t *testing.T) {
 func TestAuditSafeBoundsAndStrips(t *testing.T) {
 	long := strings.Repeat("a", 5000) + "\x00\x1b[31m<script>\n"
 	got := backup.AuditSafe(long)
-	if len(got) > 300 {
-		t.Errorf("length %d, want bounded", len(got))
+	if len(got) > backup.AuditColumnWidth {
+		t.Errorf("length %d exceeds the %d-byte audit column", len(got), backup.AuditColumnWidth)
 	}
 	for _, r := range got {
 		if r < 0x20 || r == 0x7f {

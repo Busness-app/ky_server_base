@@ -229,8 +229,13 @@ func (c *KyRecoveryClient) Deposit(ctx context.Context, serverURL, apiToken stri
 	return rcpt, nil
 }
 
-// auditTextLimit bounds any text that reaches the audit log from outside the process.
-const auditTextLimit = 256
+// auditTextLimit bounds any text that reaches the audit log from outside the process. It sits
+// under AuditColumnWidth with room for the "..." marker and a multi-byte rune at the cut.
+const auditTextLimit = 200
+
+// AuditColumnWidth is the widest value the Postgres audit columns accept (VARCHAR(255)).
+// Anything longer makes the insert fail, and a failed insert is a missing audit row.
+const AuditColumnWidth = 255
 
 // AuditSafe makes a string fit for an audit record: printable characters only, cut at
 // auditTextLimit. Remote bodies and operator input go through it before they are stored,

@@ -161,6 +161,9 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 // stored: a resource may be an operator-typed URL and details may quote a remote body.
 func (s *Server) auditBackup(ctx context.Context, userID string, r *http.Request, action, resource, details string) {
 	resource, details = backup.AuditSafe(resource), backup.AuditSafe(details)
+	if len(resource) > backup.AuditColumnWidth {
+		resource = resource[:backup.AuditColumnWidth]
+	}
 	if err := s.store.Audit().LogAudit(ctx, &store.AuditRecord{
 		UserID:    userID,
 		Action:    action,
