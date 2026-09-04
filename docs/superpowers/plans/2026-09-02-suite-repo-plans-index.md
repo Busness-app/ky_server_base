@@ -15,8 +15,9 @@ stays in the parent plan. Everything here is the other repos.
 | [Capsule format interop](2026-09-02-capsule-format-interop.md) | shared gate | `ky-primitives` exists |
 | [kysignon-server migration](2026-09-02-kysignon-server-migration.md) | `kysignon-server` | capsule gate, for its Task 3 only |
 | ~~[gridlock-server migration](2026-09-02-gridlock-server-migration.md)~~ — **superseded 2026-09-03** by the two plans below | `gridlock-server` | — |
-| [Scaffold adopts ky-primitives v0.4.0](2026-09-03-scaffold-adopts-ky-primitives.md) | `ky_server_base` | `ky-primitives v0.4.0` (tagged 2026-09-03) |
-| [gridlock re-fork](2026-09-03-gridlock-refork.md) | `gridlock-server` | the scaffold plan, merged |
+| [Scaffold adopts ky-primitives v0.4.0](2026-09-03-scaffold-adopts-ky-primitives.md) — **DONE 2026-09-03** (PR #5) | `ky_server_base` | — |
+| [gridlock re-fork](2026-09-03-gridlock-refork.md) — **DONE 2026-09-03** (gridlock PR #5) | `gridlock-server` | — |
+| [kyrecovery blind store](2026-09-04-kyrecovery-blind-store.md) | `kyrecovery-server` | ky-primitives v0.4.1 tagged (PR #11) |
 | [Audit chain convergence](2026-09-02-audit-chain-convergence.md) | `kyrecovery-server`, `kypassword-server`, `kybookmarks-server` | `ky-primitives` exists |
 | [Pairing spec, one home](2026-09-02-pairing-spec-one-home.md) | all nine, plus a loose copy | nothing |
 
