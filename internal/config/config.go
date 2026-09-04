@@ -242,10 +242,13 @@ func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid CIDR %q: %w", field, err)
 			}
-			if prefix.Bits() == 0 {
+			// Checked after unmapping: a mapped form like ::ffff:0.0.0.0/96 has Bits() == 96
+			// here but means 0.0.0.0/0 once rewritten, and would otherwise slip the guard.
+			masked := unmapPrefix(prefix).Masked()
+			if masked.Bits() == 0 {
 				return nil, fmt.Errorf("trusted proxy %q trusts every address; list the proxy's own address or subnet instead", field)
 			}
-			out = append(out, unmapPrefix(prefix).Masked())
+			out = append(out, masked)
 			continue
 		}
 		addr, err := netip.ParseAddr(field)

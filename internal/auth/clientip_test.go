@@ -104,6 +104,12 @@ func TestClientIP(t *testing.T) {
 			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "not-an-ip:not-a-port",
 			want: "192.0.2.7",
 		},
+		{
+			// net.SplitHostPort accepts a non-numeric port; it only requires a host:port shape.
+			name:    "a non-numeric port after a valid IP still yields the IP",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "1.2.3.4:abc",
+			want: "1.2.3.4",
+		},
 	}
 
 	for _, tc := range tests {
@@ -131,7 +137,7 @@ func TestClientIP(t *testing.T) {
 }
 
 func TestParseTrustedProxiesRejectsGarbage(t *testing.T) {
-	for _, raw := range []string{"nonsense", "192.0.2.0/33", "192.0.2.1, oops", "192.0.2.0/", "0.0.0.0/0", "::/0"} {
+	for _, raw := range []string{"nonsense", "192.0.2.0/33", "192.0.2.1, oops", "192.0.2.0/", "0.0.0.0/0", "::/0", "::ffff:0.0.0.0/96"} {
 		if _, err := config.ParseTrustedProxies(raw); err == nil {
 			t.Errorf("ParseTrustedProxies(%q) accepted an invalid entry", raw)
 		}
