@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -54,10 +55,48 @@ func pair(t *testing.T, cfg *config.Config, st store.Store) recoverykey.PrivateK
 	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StorePairing(ctx, st.Settings(), "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	return priv
+}
+
+// The token is the standing credential to the service holding every historical backup: a
+// database disclosure must not hand it over in the clear.
+func TestStorePairingSealsTheTokenAtRest(t *testing.T) {
+	cfg, st := depositConfig(t)
+	ctx := context.Background()
+	const token = "kyrec_live_super_secret"
+	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", token); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := st.Settings().GetSetting(ctx, "kyrecovery_token_enc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw == "" || strings.Contains(raw, token) {
+		t.Fatalf("the stored setting is not sealed: %q", raw)
+	}
+	if !backup.HasPairing(ctx, st.Settings()) {
+		t.Error("HasPairing false for a stored pairing")
+	}
+}
+
+// A paired instance whose recovery.pub is gone has stopped backing up; that is a failure to
+// report, not the quiet skip a never-paired instance gets.
+func TestALostKeyPinIsNotSilentlyUnpaired(t *testing.T) {
+	cfg, st := depositConfig(t)
+	pair(t, cfg, st)
+	if err := os.Remove(backup.RecoveryKeyPath(cfg.Database.DataDir)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := backup.DepositBackup(context.Background(), cfg, st.Settings(), &fakeStore{}, "1.0.0")
+	if !errors.Is(err, backup.ErrKeyPinMissing) {
+		t.Fatalf("got %v, want ErrKeyPinMissing", err)
+	}
+	if errors.Is(err, backup.ErrNotPaired) {
+		t.Error("a broken pairing reads as never paired, which the scheduler skips silently")
+	}
 }
 
 func TestDepositBackupSealsToThePinnedKeyAndRecordsTheReceipt(t *testing.T) {

@@ -65,3 +65,18 @@ func TestPKCEGeneration(t *testing.T) {
 		t.Errorf("verifier and challenge should not be identical")
 	}
 }
+
+func TestDeriveKey(t *testing.T) {
+	master := []byte("0123456789abcdef0123456789abcdef")
+	a := crypto.DeriveKey(master, "app:setting:one")
+	b := crypto.DeriveKey(master, "app:setting:two")
+	if len(a) != 32 {
+		t.Fatalf("derived key is %d bytes, want 32", len(a))
+	}
+	if string(a) == string(b) {
+		t.Error("two different labels derived the same key")
+	}
+	if string(a) != string(crypto.DeriveKey(master, "app:setting:one")) {
+		t.Error("the same label derived a different key on a second call")
+	}
+}

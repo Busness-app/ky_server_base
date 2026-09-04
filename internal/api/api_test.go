@@ -790,7 +790,7 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StorePairing(ctx, st.Settings(), "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeDepositor{}
@@ -835,7 +835,7 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	// A failure this side of the wire is not a refusal by the store, and not a seal failure
 	// either: a pinned URL the client refuses is the operator's problem to see plainly.
 	fake.err = nil
-	if err := backup.StorePairing(ctx, st.Settings(), "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	api.SetRecoveryClientForTest(srv, backup.NewKyRecoveryClient())
@@ -888,7 +888,7 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StorePairing(ctx, st.Settings(), "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
