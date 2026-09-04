@@ -45,7 +45,7 @@ func (s *Server) handlePairVerify(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if !s.allowAttempt("pair:"+requestIP(r), 10, time.Minute) {
+	if !s.allowAttempt("pair:"+s.requestIP(r), 10, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many pairing attempts")
 		return
 	}
@@ -85,5 +85,11 @@ func (s *Server) handlePairPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, pairing)
+	// The poll route is unauthenticated: project, never marshal the record. Secret, code,
+	// user_id and push_token stay on the server.
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"status":      pairing.Status,
+		"expires_at":  pairing.ExpiresAt.Unix(),
+		"device_name": pairing.DeviceName,
+	})
 }

@@ -175,6 +175,10 @@ type PushResponse struct {
 }
 
 // PushBackup pushes a self-declaring backup payload to the remote KyRecovery instance.
+//
+// It transmits the payload in plaintext over TLS, so it must never be handed a payload that
+// AppendSealedOnlyFiles has touched: those members are only safe inside a sealed capsule.
+// Plan 5 replaces this call with a sealed-capsule deposit.
 func (c *KyRecoveryClient) PushBackup(ctx context.Context, serverURL, apiToken string, payload PushBackupPayload) (*PushResponse, error) {
 	serverURL = strings.TrimRight(serverURL, "/")
 	endpoint := fmt.Sprintf("%s/api/backup/push", serverURL)
@@ -214,7 +218,9 @@ func (c *KyRecoveryClient) PushBackup(ctx context.Context, serverURL, apiToken s
 	return &pushResp, nil
 }
 
-// BuildLocalPayload collects local application files (SQLite database, configuration) into a self-declaring backup package.
+// BuildLocalPayload collects local application files (SQLite database, configuration) into a
+// self-declaring backup package. It carries nothing secret: sealing callers add the
+// sealed-only members with AppendSealedOnlyFiles.
 func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayload, error) {
 	var files []PushBackupFile
 	var sqlitePaths []string
@@ -234,31 +240,6 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 			})
 			sqlitePaths = append(sqlitePaths, relPath)
 		}
-	}
-
-	// The encryption key rides along. users.totp_secret_enc is AES-GCM under it, so a capsule
-	// without it restores a database whose MFA secrets are unreadable forever. The capsule is
-	// sealed to the suite recovery public key; only k custodians together open it, which is
-	// exactly what that key is for. Spelled the way keyfile.LoadOrCreate reads it back.
-	if len(cfg.Security.EncryptionKey) != 32 {
-		return nil, fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to build a payload that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
-	}
-	files = append(files, PushBackupFile{
-		Path:       encryptionKeyPath,
-		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
-		Mode:       0600,
-	})
-
-	// The suite recovery public key rides along when this instance is paired. It is public and
-	// the capsule is sealed to that very key, so carrying it costs nothing; without it a restore
-	// comes back with the settings pin but no file, which reads as "not paired" and steers the
-	// operator into a re-pair. Unpaired instances simply omit it, so a drill still runs.
-	if pub, err := os.ReadFile(RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
-		files = append(files, PushBackupFile{
-			Path:       recoveryPubPath,
-			DataBase64: base64.StdEncoding.EncodeToString(pub),
-			Mode:       0600,
-		})
 	}
 
 	// Include config manifest snapshot
@@ -298,4 +279,42 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 	}
 
 	return payload, nil
+}
+
+// AppendSealedOnlyFiles adds the payload members that may only ever travel inside a sealed
+// capsule, and re-derives required_files so a restore drill still checks for them. Call it
+// from the sealing collectors only; never from anything that reaches PushBackup.
+//
+// The encryption key must ride along: users.totp_secret_enc is AES-GCM under it, so a capsule
+// without it restores a database whose MFA secrets are unreadable forever. The capsule is
+// sealed to the suite recovery public key, so only k custodians together open it, which is
+// exactly what that key is for. Spelled the way keyfile.LoadOrCreate reads it back.
+//
+// The suite recovery public key rides along when this instance is paired. Without it a restore
+// comes back with the settings pin but no file, which reads as "not paired" and steers the
+// operator into a re-pair. Unpaired instances simply omit it, so a drill still runs.
+func AppendSealedOnlyFiles(cfg *config.Config, payload *PushBackupPayload) error {
+	if len(cfg.Security.EncryptionKey) != 32 {
+		return fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to seal a capsule that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
+	}
+	payload.Files = append(payload.Files, PushBackupFile{
+		Path:       encryptionKeyPath,
+		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
+		Mode:       0600,
+	})
+
+	if pub, err := os.ReadFile(RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
+		payload.Files = append(payload.Files, PushBackupFile{
+			Path:       recoveryPubPath,
+			DataBase64: base64.StdEncoding.EncodeToString(pub),
+			Mode:       0600,
+		})
+	}
+
+	reqFiles := make([]string, 0, len(payload.Files))
+	for _, f := range payload.Files {
+		reqFiles = append(reqFiles, f.Path)
+	}
+	payload.VerificationRecipe["required_files"] = reqFiles
+	return nil
 }

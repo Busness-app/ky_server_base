@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -46,6 +45,21 @@ type attemptWindow struct {
 	reset time.Time
 }
 
+// attemptsCap bounds the limiter map. Unauthenticated callers influence the keys, so the map
+// is itself attack surface. At the cap we evict, never refuse: refusing every unknown key
+// would let one caller fill the map and lock every new client out of login.
+//
+// The trade-off: memory is bounded, but an attacker who fills the map shortens other clients'
+// windows, since an evicted counter starts again from zero. That weakens throttling while the
+// attack runs; it never locks anyone out, which is the failure mode worth avoiding.
+//
+// Eviction is deliberately blind to how much of a window is left. Picking the entry nearest to
+// expiry would always sacrifice the shortest windows first, so a caller minting keys with a
+// long window could keep the one-minute login counter from ever reaching its limit. Every key
+// is therefore equally likely to go. The real defence is that no key carries caller-supplied
+// bytes, so filling the map costs an attacker one slot per IP.
+const attemptsCap = 10000
+
 func NewServer(cfg *config.Config, st store.Store) *Server {
 	sessions := auth.NewSessionManager(st, cfg.Security)
 	pairing := devices.NewPairingService(st, cfg.Server.AppName, cfg.Server.AppURL)
@@ -77,28 +91,46 @@ func (s *Server) allowAttempt(key string, limit int, window time.Duration) bool 
 	now := time.Now()
 	s.attemptsMu.Lock()
 	defer s.attemptsMu.Unlock()
-	entry := s.attempts[key]
+	if _, known := s.attempts[key]; !known && len(s.attempts) >= attemptsCap {
+		s.makeRoom(now)
+	}
+	entry := bumpWindow(s.attempts[key], now, window)
+	s.attempts[key] = entry
+	return entry.count <= limit
+}
+
+// makeRoom frees a slot for a new key: it drops every expired window, and if the map is still
+// full it drops one live entry chosen at random, never the one nearest expiry. Caller holds
+// attemptsMu. The scan is O(attemptsCap) and only runs for a new key while the map is full;
+// 10 000 entries is microseconds.
+func (s *Server) makeRoom(now time.Time) {
+	for candidate, w := range s.attempts {
+		if now.After(w.reset) {
+			delete(s.attempts, candidate)
+		}
+	}
+	if len(s.attempts) >= attemptsCap {
+		// Go randomises map iteration, so the first entry is an unbiased victim.
+		for candidate := range s.attempts {
+			delete(s.attempts, candidate)
+			break
+		}
+	}
+}
+
+func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemptWindow {
 	if now.After(entry.reset) {
 		entry = attemptWindow{reset: now.Add(window)}
 	}
 	entry.count++
-	s.attempts[key] = entry
-	if len(s.attempts) > 10000 {
-		for candidate, window := range s.attempts {
-			if now.After(window.reset) {
-				delete(s.attempts, candidate)
-			}
-		}
-	}
-	return entry.count <= limit
+	return entry
 }
 
-func requestIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+// requestIP is the limiter's key for unauthenticated routes. It resolves to the same address
+// a session is bound to, and honours X-Forwarded-For only from a configured trusted proxy:
+// keying on a caller-supplied header would make every limit here bypassable.
+func (s *Server) requestIP(r *http.Request) string {
+	return auth.ClientIP(r, s.config.Security.TrustedProxies)
 }
 
 func (s *Server) routes() {

@@ -134,7 +134,10 @@ func runInitAdmin(args []string) {
 		log.Fatal("Error: -password is required and must be at least 12 characters")
 	}
 
-	cfg, _ := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.Database)
 	if err != nil {
@@ -182,6 +185,10 @@ func loadRecoveryKey(ctx context.Context, cfg *config.Config, st store.Store) (b
 func collectFiles(cfg *config.Config) (*backup.PushBackupPayload, []backup.BackupFile) {
 	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
 	if err != nil {
+		log.Fatalf("Failed to collect backup files: %v", err)
+	}
+	// Every caller of this seals; the sealed-only members are safe here and nowhere else.
+	if err := backup.AppendSealedOnlyFiles(cfg, payload); err != nil {
 		log.Fatalf("Failed to collect backup files: %v", err)
 	}
 	var files []backup.BackupFile

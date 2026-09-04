@@ -44,7 +44,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	if !s.allowAttempt("login:"+requestIP(r), 20, time.Minute) {
+	if !s.allowAttempt("login:"+s.requestIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many login attempts")
 		return
 	}
@@ -139,7 +139,10 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+	// Key on the client alone. Nothing caller-supplied may reach the key: a token in the key
+	// lets one client mint unbounded slots and starve every other window. Same shape as the
+	// login limit above, so a client occupies one MFA slot no matter how it spends it.
+	if !s.allowAttempt("mfa:"+s.requestIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}
@@ -147,6 +150,12 @@ func (s *Server) handleMFATOTP(w http.ResponseWriter, r *http.Request) {
 	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
+		return
+	}
+	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
+	// guess already costs a fresh password login, since the challenge is consumed either way.
+	if !s.allowAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}
 	user, err := s.store.Users().GetUserByID(r.Context(), userID)
@@ -204,7 +213,10 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if !s.allowAttempt("mfa:"+req.MFAToken, 3, 5*time.Minute) {
+	// Key on the client alone. Nothing caller-supplied may reach the key: a token in the key
+	// lets one client mint unbounded slots and starve every other window. Same shape as the
+	// login limit above, so a client occupies one MFA slot no matter how it spends it.
+	if !s.allowAttempt("mfa:"+s.requestIP(r), 20, time.Minute) {
 		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts")
 		return
 	}
@@ -212,6 +224,12 @@ func (s *Server) handleMFARecovery(w http.ResponseWriter, r *http.Request) {
 	userID, err := s.store.Sessions().ConsumeMFAChallenge(r.Context(), crypto.SHA256Hex([]byte(req.MFAToken)))
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Invalid or expired MFA transaction")
+		return
+	}
+	// Per-account, so a botnet spread across many IPs cannot outrun the per-IP window. Each
+	// guess already costs a fresh password login, since the challenge is consumed either way.
+	if !s.allowAttempt("mfa-user:"+userID, 5, 5*time.Minute) {
+		s.writeError(w, http.StatusTooManyRequests, "Too many MFA attempts for this account")
 		return
 	}
 	user, err := s.store.Users().GetUserByID(r.Context(), userID)
