@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/ky_server_base/internal/config"
 )
@@ -76,5 +77,30 @@ func TestEncryptionKeyFromEnvMustBe32Bytes(t *testing.T) {
 	t.Setenv("KY_ENCRYPTION_KEY", "deadbeef")
 	if _, err := config.LoadFromEnv(); err == nil {
 		t.Fatal("8-byte key accepted")
+	}
+}
+
+func TestDepositIntervalFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 24 * time.Hour, true},
+		{"90m", 90 * time.Minute, true},
+		{"0", 0, true},
+		{"-1h", 0, false},
+		{"daily", 0, false},
+	} {
+		t.Setenv("KY_BACKUP_DEPOSIT_INTERVAL", tc.in)
+		cfg, err := config.LoadFromEnv()
+		if (err == nil) != tc.ok {
+			t.Errorf("%q: err=%v, want ok=%v", tc.in, err, tc.ok)
+			continue
+		}
+		if tc.ok && cfg.Backup.DepositInterval != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.in, cfg.Backup.DepositInterval, tc.want)
+		}
 	}
 }

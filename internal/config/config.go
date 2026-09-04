@@ -83,6 +83,9 @@ type SCIMConfig struct {
 type BackupConfig struct {
 	StorageDir   string `json:"storage_dir"`
 	AutoDrillDay int    `json:"auto_drill_day"` // day of week
+	// DepositInterval is how often a paired instance seals and deposits a capsule to
+	// KyRecovery. Zero disables the schedule; deposits then happen only on request.
+	DepositInterval time.Duration `json:"deposit_interval"`
 }
 
 // CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
@@ -131,6 +134,11 @@ func LoadFromEnv() (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("encryption key: %w", err)
 		}
+	}
+
+	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %w", err)
 	}
 
 	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
@@ -182,8 +190,9 @@ func LoadFromEnv() (*Config, error) {
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
 		},
 		Backup: BackupConfig{
-			StorageDir:   getEnv("KY_BACKUP_DIR", "./backups"),
-			AutoDrillDay: getEnvInt("KY_BACKUP_DRILL_DAY", 0), // Sunday
+			StorageDir:      getEnv("KY_BACKUP_DIR", "./backups"),
+			AutoDrillDay:    getEnvInt("KY_BACKUP_DRILL_DAY", 0), // Sunday
+			DepositInterval: depositInterval,
 		},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
@@ -218,6 +227,22 @@ func getEnvBool(key string, defaultVal bool) bool {
 		return lower == "true" || lower == "1" || lower == "yes" || lower == "on"
 	}
 	return defaultVal
+}
+
+// getEnvDuration parses a Go duration such as "24h" or "90m". Negative is refused; "0" disables.
+func getEnvDuration(key string, defaultVal time.Duration) (time.Duration, error) {
+	val, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(val) == "" {
+		return defaultVal, nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(val))
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s is negative", val)
+	}
+	return d, nil
 }
 
 func generateRandomHex(n int) string {

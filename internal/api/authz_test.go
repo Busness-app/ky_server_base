@@ -123,6 +123,7 @@ func TestPrivilegedEndpointsRequireAdmin(t *testing.T) {
 		{"POST", "/api/backup/drill"},
 		{"GET", "/api/backup/export-capsule"},
 		{"POST", "/api/backup/pair-remote"},
+		{"POST", "/api/backup/deposit"},
 		{"POST", "/api/settings/theme"},
 	}
 

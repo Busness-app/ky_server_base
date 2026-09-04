@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Archive, Play, Download, CheckCircle2, XCircle, Loader2, Link2 } from 'lucide-react';
+import { Archive, Play, Download, CheckCircle2, XCircle, Loader2, Link2, UploadCloud } from 'lucide-react';
 import { secureFetch } from '../api';
 
 export const Backup: React.FC = () => {
@@ -9,6 +9,23 @@ export const Backup: React.FC = () => {
   const [pairCode, setPairCode] = useState<string>('');
   const [pairStatus, setPairStatus] = useState<string>('');
   const [pairingLoading, setPairingLoading] = useState<boolean>(false);
+  const [depositing, setDepositing] = useState<boolean>(false);
+  const [depositStatus, setDepositStatus] = useState<string>('');
+
+  const depositNow = async () => {
+    setDepositing(true);
+    setDepositStatus('');
+    try {
+      const resp = await secureFetch('/api/backup/deposit', { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || 'Deposit failed');
+      setDepositStatus(`Deposited ${data.capsule_id} (${data.size_bytes} bytes) at ${data.deposited_at}`);
+    } catch (err) {
+      setDepositStatus(err instanceof Error ? err.message : 'Deposit failed');
+    } finally {
+      setDepositing(false);
+    }
+  };
 
   const runDrill = async () => {
     setRunningDrill(true);
@@ -138,15 +155,35 @@ export const Backup: React.FC = () => {
             Download the backup sealed to your KyRecovery public key. Only the custodian shares open it.
           </p>
 
-          <a
-            href="/api/backup/export-capsule"
-            download
-            className="btn btn-secondary"
-            style={{ textDecoration: 'none', display: 'inline-flex', marginBottom: '24px' }}
-          >
-            <Download size={16} />
-            <span>Download sealed capsule (.kycap)</span>
-          </a>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+            <button type="button" onClick={depositNow} disabled={depositing}>
+              {depositing ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+              <span>{depositing ? 'Depositing...' : 'Deposit to KyRecovery now'}</span>
+            </button>
+            <a
+              href="/api/backup/export-capsule"
+              download
+              className="btn btn-secondary"
+              style={{ textDecoration: 'none', display: 'inline-flex' }}
+            >
+              <Download size={16} />
+              <span>Download sealed capsule (.kycap)</span>
+            </a>
+          </div>
+          <p style={{ color: 'var(--ink)', fontSize: '12px', marginBottom: '16px' }}>
+            Paired instances also deposit on a schedule (KY_BACKUP_DEPOSIT_INTERVAL, default every 24h).
+          </p>
+          {depositStatus && (
+            <p
+              style={{
+                fontSize: '12px',
+                color: depositStatus.startsWith('Deposited') ? 'var(--success)' : 'var(--danger)',
+                marginBottom: '16px',
+              }}
+            >
+              {depositStatus}
+            </p>
+          )}
 
           <div style={{ borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
             <h4 style={{ fontSize: '14px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>

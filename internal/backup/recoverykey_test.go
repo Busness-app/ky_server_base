@@ -224,7 +224,7 @@ func TestClaimPairingRequiresATopology(t *testing.T) {
 	}
 
 	client := backup.NewClientWithTransportForTest(claimTransport{body: body(2, 3)})
-	got, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "app")
+	got, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "svc", "app")
 	if err != nil {
 		t.Fatalf("valid claim: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestClaimPairingRequiresATopology(t *testing.T) {
 
 	for _, tc := range []struct{ threshold, total int }{{0, 0}, {0, 3}, {1, 3}, {4, 3}} {
 		client := backup.NewClientWithTransportForTest(claimTransport{body: body(tc.threshold, tc.total)})
-		if _, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "app"); err == nil {
+		if _, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "svc", "app"); err == nil {
 			t.Errorf("%d-of-%d: claim accepted, want an error", tc.threshold, tc.total)
 		}
 	}

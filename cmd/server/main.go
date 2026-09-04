@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,6 +26,9 @@ import (
 	"github.com/Busness-app/ky_server_base/internal/store"
 )
 
+// appVersion is what the capsule manifest records for this build.
+const appVersion = "1.0.0"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -38,6 +40,9 @@ func main() {
 			return
 		case "export-capsule":
 			runExportCapsule(os.Args[2:])
+			return
+		case "deposit":
+			runDeposit()
 			return
 		case "restore":
 			runRestore(os.Args[2:])
@@ -92,6 +97,9 @@ func runServer() {
 	}
 
 	srv := api.NewServer(cfg, st)
+	if cfg.Backup.DepositInterval > 0 {
+		go depositLoop(ctx, cfg, st)
+	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	httpServer := &http.Server{
@@ -122,6 +130,55 @@ func runServer() {
 		log.Printf("Shutdown error: %v", err)
 	}
 	log.Println("[KY-BASE] Server stopped")
+}
+
+// depositLoop seals and deposits a capsule every DepositInterval while the instance is paired.
+// Unpaired instances stay quiet; every attempt after pairing is audited under the system user.
+func depositLoop(ctx context.Context, cfg *config.Config, st store.Store) {
+	client := backup.NewKyRecoveryClient()
+	ticker := time.NewTicker(cfg.Backup.DepositInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		rcpt, m, err := backup.DepositBackup(ctx, cfg, st.Settings(), client, appVersion)
+		if errors.Is(err, backup.ErrNotPaired) {
+			continue
+		}
+		if err != nil {
+			log.Printf("[BACKUP] scheduled deposit failed: %v", err)
+			_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: "backup.deposit_failed", Resource: m.CapsuleID, Details: backup.AuditSafe(err.Error())})
+			continue
+		}
+		log.Printf("[BACKUP] deposited capsule %s (%d bytes) with KyRecovery", rcpt.CapsuleID, rcpt.SizeBytes)
+		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: "backup.deposited", Resource: rcpt.CapsuleID, Details: "digest=" + rcpt.Digest})
+	}
+}
+
+// runDeposit seals and deposits one capsule now, for cron or an operator at a shell.
+func runDeposit() {
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer st.Close()
+
+	rcpt, m, err := backup.DepositBackup(ctx, cfg, st.Settings(), backup.NewKyRecoveryClient(), appVersion)
+	if err != nil {
+		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: "backup.deposit_failed", Resource: m.CapsuleID, Details: backup.AuditSafe(err.Error())})
+		log.Fatalf("Deposit: %v", err)
+	}
+	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: "backup.deposited", Resource: rcpt.CapsuleID, Details: "digest=" + rcpt.Digest})
+	log.Printf("✓ Capsule %s (%d bytes, sealed to recovery key %s) deposited at %s; digest %s",
+		rcpt.CapsuleID, rcpt.SizeBytes, m.RecoveryKeyID, rcpt.DepositedAt.Format(time.RFC3339), rcpt.Digest)
 }
 
 func runInitAdmin(args []string) {
@@ -182,24 +239,13 @@ func loadRecoveryKey(ctx context.Context, cfg *config.Config, st store.Store) (b
 	return backup.LoadRecoveryKey(ctx, cfg.Database.DataDir, st.Settings())
 }
 
-func collectFiles(cfg *config.Config) (*backup.PushBackupPayload, []backup.BackupFile) {
-	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
+// collectFiles is what every CLI seal uses; the sealed-only members are safe here and nowhere else.
+func collectFiles(cfg *config.Config) *backup.Payload {
+	payload, err := backup.CollectSealable(cfg, appVersion)
 	if err != nil {
 		log.Fatalf("Failed to collect backup files: %v", err)
 	}
-	// Every caller of this seals; the sealed-only members are safe here and nowhere else.
-	if err := backup.AppendSealedOnlyFiles(cfg, payload); err != nil {
-		log.Fatalf("Failed to collect backup files: %v", err)
-	}
-	var files []backup.BackupFile
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			log.Fatalf("Invalid backup file encoding: %v", err)
-		}
-		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
-	}
-	return payload, files
+	return payload
 }
 
 func runBackupDrill(args []string) {
@@ -214,12 +260,12 @@ func runBackupDrill(args []string) {
 	}
 	defer st.Close()
 
-	payload, files := collectFiles(cfg)
+	payload := collectFiles(cfg)
 	pinned, err := loadRecoveryKey(ctx, cfg, st)
 	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
 		log.Fatalf("Recovery key: %v", err)
 	}
-	result, err := backup.RunRestoreDrill(ctx, cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, pinned)
+	result, err := backup.RunRestoreDrill(ctx, payload.ServiceName, payload.AppVersion, payload.Files, payload.Dependencies, payload.VerificationRecipe, pinned)
 	if err != nil {
 		log.Fatalf("Drill execution error: %v", err)
 	}
@@ -257,8 +303,8 @@ func runExportCapsule(args []string) {
 	if err != nil {
 		log.Fatalf("Recovery key: %v", err)
 	}
-	payload, files := collectFiles(cfg)
-	raw, m, err := backup.Seal(cfg.Server.AppName, "1.0.0", files, payload.Dependencies, payload.VerificationRecipe, key)
+	payload := collectFiles(cfg)
+	raw, m, err := backup.Seal(payload.ServiceName, payload.AppVersion, payload.Files, payload.Dependencies, payload.VerificationRecipe, key)
 	if err != nil {
 		log.Fatalf("Seal: %v", err)
 	}
