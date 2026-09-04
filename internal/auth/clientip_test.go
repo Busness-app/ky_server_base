@@ -14,6 +14,7 @@ func TestClientIP(t *testing.T) {
 		trusted string
 		peer    string
 		xff     string
+		xffAdd  []string
 		realIP  string
 		want    string
 	}{
@@ -65,6 +66,19 @@ func TestClientIP(t *testing.T) {
 			want: "203.0.113.5",
 		},
 		{
+			// HAProxy's "option forwardfor" emits its own header line rather than appending to
+			// the caller's, so the real chain is the last line, not the first.
+			name:    "a second X-Forwarded-For line beats an attacker's first one",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000",
+			xffAdd: []string{"9.9.9.9", "198.51.100.9"},
+			want:   "198.51.100.9",
+		},
+		{
+			name:    "an IPv4-mapped CIDR entry matches an unmapped IPv4 proxy",
+			trusted: "::ffff:192.0.2.0/120", peer: "192.0.2.7:41000", xff: "198.51.100.9",
+			want: "198.51.100.9",
+		},
+		{
 			name:    "a bare IP entry in the allowlist matches only itself",
 			trusted: "192.0.2.7", peer: "192.0.2.8:41000", xff: "198.51.100.9",
 			want: "192.0.2.8",
@@ -81,6 +95,9 @@ func TestClientIP(t *testing.T) {
 			r.RemoteAddr = tc.peer
 			if tc.xff != "" {
 				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			for _, line := range tc.xffAdd {
+				r.Header.Add("X-Forwarded-For", line)
 			}
 			if tc.realIP != "" {
 				r.Header.Set("X-Real-IP", tc.realIP)

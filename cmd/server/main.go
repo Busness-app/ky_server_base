@@ -134,7 +134,10 @@ func runInitAdmin(args []string) {
 		log.Fatal("Error: -password is required and must be at least 12 characters")
 	}
 
-	cfg, _ := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 	ctx := context.Background()
 	st, err := store.Open(ctx, cfg.Database)
 	if err != nil {

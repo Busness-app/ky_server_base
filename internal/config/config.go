@@ -242,7 +242,7 @@ func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid CIDR %q: %w", field, err)
 			}
-			out = append(out, prefix.Masked())
+			out = append(out, unmapPrefix(prefix).Masked())
 			continue
 		}
 		addr, err := netip.ParseAddr(field)
@@ -253,4 +253,14 @@ func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
 	}
 	return out, nil
+}
+
+// unmapPrefix rewrites an IPv4-mapped IPv6 prefix as the plain IPv4 one it means. Peers are
+// unmapped before the allowlist is consulted, and netip.Prefix.Contains never matches across
+// families, so a mapped entry would otherwise match nothing at all.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if !p.Addr().Is4In6() || p.Bits() < 96 {
+		return p
+	}
+	return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
 }

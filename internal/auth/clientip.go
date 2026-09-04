@@ -30,7 +30,10 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 		return peer
 	}
 
-	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	// Every header line, not just the first: a proxy that emits its own line instead of
+	// appending (HAProxy's "option forwardfor") leaves the real chain in the last line, and
+	// reading only the first would hand the walk straight back to the caller.
+	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(parts) - 1; i >= 0; i-- {
 		addr, err := netip.ParseAddr(strings.TrimSpace(parts[i]))
 		if err != nil {
