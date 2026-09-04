@@ -137,7 +137,11 @@ func TestDepositErrorQuotesABoundedPrintableExcerpt(t *testing.T) {
 
 func TestDepositRefusesAnUnsafeURL(t *testing.T) {
 	client := backup.NewClientWithTransportForTest(&recorder{status: http.StatusCreated, body: func(sent []byte) string { return receiptFor(sent, "c") }})
-	for _, u := range []string{"http://recovery.busnes.app", "https://127.0.0.1:8095", "https://10.0.0.5", "https://user:pw@recovery.busnes.app"} {
+	for _, u := range []string{
+		"http://recovery.busnes.app", "https://127.0.0.1:8095", "https://10.0.0.5", "https://user:pw@recovery.busnes.app",
+		"https://100.64.0.1", "https://100.127.255.254", "https://192.0.0.9", "https://198.18.0.1", "https://240.0.0.1", "https://[64:ff9b::a00:1]",
+		"https://recovery.busnes.app/?x=1", "https://recovery.busnes.app/#frag",
+	} {
 		_, err := client.Deposit(context.Background(), u, "tok", []byte("x"))
 		if err == nil {
 			t.Errorf("%s: accepted", u)
@@ -146,3 +150,29 @@ func TestDepositRefusesAnUnsafeURL(t *testing.T) {
 		}
 	}
 }
+
+// A redirect is a validated destination handing the capsule to a host the operator never
+// named, and Go would replay the POST body on a 308. None are followed.
+func TestDepositRefusesRedirects(t *testing.T) {
+	calls := 0
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusPermanentRedirect, Header: http.Header{"Location": []string{"https://other.example/steal"}},
+			Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	client := backup.NewClientWithTransportForTest(rt)
+	_, err := client.Deposit(context.Background(), "https://recovery.busnes.app", "tok", []byte("kycap"))
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("redirect followed or not named: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("transport saw %d requests, want 1", calls)
+	}
+	if _, err := client.ClaimPairing(context.Background(), "https://recovery.busnes.app", "123456", "KySignOn", "KySignOn"); err == nil {
+		t.Error("claim followed a redirect")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
