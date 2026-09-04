@@ -44,7 +44,7 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 		TokenHash: tokenHash,
 		UserID:    userID,
 		UserAgent: r.UserAgent(),
-		IPAddress: getClientIP(r),
+		IPAddress: ClientIP(r, sm.config.TrustedProxies),
 		CreatedAt: time.Now().UTC(),
 		ExpiresAt: time.Now().UTC().Add(ttl),
 	}
@@ -162,15 +162,4 @@ func (sm *SessionManager) RevokeSession(ctx context.Context, w http.ResponseWrit
 	})
 
 	return nil
-}
-
-func getClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
-	}
-	return strings.Split(r.RemoteAddr, ":")[0]
 }

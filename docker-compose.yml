@@ -15,6 +15,8 @@ services:
       - KY_DB_DRIVER=sqlite
       - KY_DATA_DIR=/app/data
       - KY_BACKUP_DIR=/app/backups
+      # Set to your reverse proxy's IP/CIDR when one fronts this service. Never 0.0.0.0/0.
+      # - KY_TRUSTED_PROXIES=172.16.0.0/12
       - KY_SSO_ENABLED=true
       - KY_SCIM_ENABLED=true
     volumes:

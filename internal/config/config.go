@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -52,6 +53,9 @@ type SecurityConfig struct {
 	CookieSecure  bool   `json:"cookie_secure"`
 	CookieDomain  string `json:"cookie_domain"`
 	SessionTTL    time.Duration
+	// TrustedProxies is the parsed KY_TRUSTED_PROXIES allowlist. Only a request whose peer
+	// address falls inside it may speak for a client other than itself.
+	TrustedProxies []netip.Prefix `json:"-"`
 }
 
 // SSOConfig holds identity provider and federation parameters.
@@ -129,6 +133,11 @@ func LoadFromEnv() (*Config, error) {
 		}
 	}
 
+	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
+	if err != nil {
+		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
+	}
+
 	cfg := &Config{
 		Server: ServerConfig{
 			Host:         host,
@@ -148,11 +157,12 @@ func LoadFromEnv() (*Config, error) {
 			ConnMaxLifetime: 15 * time.Minute,
 		},
 		Security: SecurityConfig{
-			SessionSecret: sessionSecret,
-			EncryptionKey: encryptionKey,
-			CookieSecure:  getEnvBool("KY_COOKIE_SECURE", env == "production"),
-			CookieDomain:  getEnv("KY_COOKIE_DOMAIN", ""),
-			SessionTTL:    7 * 24 * time.Hour,
+			SessionSecret:  sessionSecret,
+			EncryptionKey:  encryptionKey,
+			CookieSecure:   getEnvBool("KY_COOKIE_SECURE", env == "production"),
+			CookieDomain:   getEnv("KY_COOKIE_DOMAIN", ""),
+			SessionTTL:     7 * 24 * time.Hour,
+			TrustedProxies: trustedProxies,
 		},
 		SSO: SSOConfig{
 			Enabled:             getEnvBool("KY_SSO_ENABLED", true),
@@ -214,4 +224,33 @@ func generateRandomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// ParseTrustedProxies parses a comma-separated list of IPs and CIDR blocks into prefixes.
+// A bare IP becomes a single-address prefix. An unparsable entry is a startup error: a
+// silently dropped proxy would make the server ignore its X-Forwarded-For and lump every
+// client behind it into one rate-limit bucket.
+func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, field := range strings.Split(raw, ",") {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if strings.Contains(field, "/") {
+			prefix, err := netip.ParsePrefix(field)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CIDR %q: %w", field, err)
+			}
+			out = append(out, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(field)
+		if err != nil {
+			return nil, fmt.Errorf("invalid IP %q: %w", field, err)
+		}
+		addr = addr.Unmap()
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
 }

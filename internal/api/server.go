@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -127,12 +126,11 @@ func bumpWindow(entry attemptWindow, now time.Time, window time.Duration) attemp
 	return entry
 }
 
-func requestIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+// requestIP is the limiter's key for unauthenticated routes. It resolves to the same address
+// a session is bound to, and honours X-Forwarded-For only from a configured trusted proxy:
+// keying on a caller-supplied header would make every limit here bypassable.
+func (s *Server) requestIP(r *http.Request) string {
+	return auth.ClientIP(r, s.config.Security.TrustedProxies)
 }
 
 func (s *Server) routes() {

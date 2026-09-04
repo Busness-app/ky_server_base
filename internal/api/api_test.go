@@ -577,3 +577,121 @@ func TestMFAPerAccountWindow(t *testing.T) {
 		t.Fatalf("only %d attempts got through before the account window closed, want 5", codes)
 	}
 }
+
+// mfaStatus fires one MFA attempt from peer, optionally claiming to be forwarded for xff.
+func mfaStatus(t *testing.T, srv *api.Server, peer, xff string) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"mfa_token": "tok", "code": "000000"})
+	req := httptest.NewRequest("POST", "/api/auth/mfa/totp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = peer
+	if xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w.Code
+}
+
+// With no trusted proxy configured, X-Forwarded-For is caller-supplied and must not open a
+// fresh limiter bucket: one peer gets one window however many clients it claims to be.
+func TestLimiterIgnoresForgedForwardedFor(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+
+	for i := 1; i <= 20; i++ {
+		xff := "198.51.100.1"
+		if i%2 == 0 {
+			xff = "198.51.100.2"
+		}
+		if code := mfaStatus(t, srv, "203.0.113.5:41000", xff); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d throttled, want no earlier than 21", i)
+		}
+	}
+	if code := mfaStatus(t, srv, "203.0.113.5:41000", "198.51.100.3"); code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 21 answered %d, want 429: a forged header bought a second window", code)
+	}
+}
+
+// Behind a configured trusted proxy the peer is the proxy for every request. Without the
+// forwarded client in the key, one bucket would cover the whole instance.
+func TestLimiterSplitsPerForwardedClientBehindTrustedProxy(t *testing.T) {
+	t.Setenv("KY_TRUSTED_PROXIES", "192.0.2.0/24")
+	srv, _, _ := setupTestServer(t)
+
+	for i := 1; i <= 20; i++ {
+		for _, client := range []string{"198.51.100.1", "198.51.100.2"} {
+			if code := mfaStatus(t, srv, "192.0.2.7:41000", client); code == http.StatusTooManyRequests {
+				t.Fatalf("client %s throttled at attempt %d; the two clients share a window", client, i)
+			}
+		}
+	}
+	if code := mfaStatus(t, srv, "192.0.2.7:41000", "198.51.100.1"); code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 21 for one forwarded client answered %d, want 429", code)
+	}
+}
+
+// A chain that ends in another trusted proxy names no client we can attribute to, so the
+// requests fall back to the peer and share the proxy's own window.
+func TestLimiterFallsBackWhenTheChainIsAllTrusted(t *testing.T) {
+	t.Setenv("KY_TRUSTED_PROXIES", "192.0.2.0/24")
+	srv, _, _ := setupTestServer(t)
+
+	for i := 1; i <= 20; i++ {
+		if code := mfaStatus(t, srv, "192.0.2.7:41000", "192.0.2.8, 192.0.2.9"); code == http.StatusTooManyRequests {
+			t.Fatalf("attempt %d throttled, want no earlier than 21", i)
+		}
+	}
+	if code := mfaStatus(t, srv, "192.0.2.7:41000", "192.0.2.8, 192.0.2.9"); code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 21 answered %d, want 429", code)
+	}
+	for _, k := range api.AttemptKeysForTest(srv) {
+		if k == "mfa:192.0.2.7" {
+			return
+		}
+	}
+	t.Fatalf("no window keyed on the peer; keys: %v", api.AttemptKeysForTest(srv))
+}
+
+// A session records the address it was issued to. Binding it to an unvalidated header let any
+// caller write whatever origin they liked into the audit trail, and made the limiter's key and
+// the session's IP disagree about who the caller was.
+func TestSessionIPIgnoresForgedForwardedFor(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+
+	hash, _ := password.Hash("SuperSecretPass123!")
+	if err := st.Users().CreateUser(context.Background(), &store.User{
+		ID: "usr_dave", Username: "dave", PasswordHash: hash,
+		Role: "user", Status: "active", SSOProvider: "local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"username": "dave", "password": "SuperSecretPass123!"})
+	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "10.66.66.66")
+	req.Header.Set("X-Real-IP", "10.77.77.77")
+	req.RemoteAddr = "203.0.113.5:41000"
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: got %d: %s", w.Code, w.Body.String())
+	}
+
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == auth.SessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("no session cookie")
+	}
+	sess, err := st.Sessions().GetSession(context.Background(), crypto.SHA256Hex([]byte(cookie.Value)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.IPAddress != "203.0.113.5" {
+		t.Errorf("session bound to %q, want the peer 203.0.113.5: a header decided the address", sess.IPAddress)
+	}
+}
