@@ -2,7 +2,6 @@ package backup_test
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,7 +13,6 @@ import (
 	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
 	"github.com/Busness-app/ky_server_base/internal/store"
-	"github.com/Busness-app/ky_server_base/internal/testdb"
 )
 
 // fakeStore is kyrecovery's side of a deposit: it records what arrived and answers with the
@@ -42,22 +40,7 @@ func (f *fakeStore) Deposit(_ context.Context, serverURL, apiToken string, conta
 
 func depositConfig(t *testing.T) (*config.Config, store.Store) {
 	t.Helper()
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatal(err)
-	}
-	cfg := &config.Config{}
-	cfg.Server.AppName = "busnes_app"
-	cfg.Server.Port = 8080
-	cfg.Database = testdb.Config(t)
-	cfg.Database.DataDir = t.TempDir()
-	cfg.Security.EncryptionKey = key
-	st, err := store.Open(context.Background(), cfg.Database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	return cfg, st
+	return sqliteInstance(t)
 }
 
 func pair(t *testing.T, cfg *config.Config, st store.Store) recoverykey.PrivateKey {
@@ -140,5 +123,38 @@ func TestAFailedDepositLeavesNoReceipt(t *testing.T) {
 	}
 	if _, ok, _ := backup.LastDeposit(ctx, st.Settings()); ok {
 		t.Error("a refused deposit was recorded as the last deposit")
+	}
+}
+
+// blockingStore holds the deposit open until released, so a second caller can be observed.
+type blockingStore struct {
+	fakeStore
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingStore) Deposit(ctx context.Context, url, token string, container []byte) (backup.Receipt, error) {
+	close(b.started)
+	<-b.release
+	return b.fakeStore.Deposit(ctx, url, token, container)
+}
+
+func TestDepositsAreSingleFlight(t *testing.T) {
+	cfg, st := depositConfig(t)
+	pair(t, cfg, st)
+	ctx := context.Background()
+	slow := &blockingStore{started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := backup.DepositBackup(ctx, cfg, st.Settings(), slow, "1.0.0")
+		done <- err
+	}()
+	<-slow.started
+	if _, _, err := backup.DepositBackup(ctx, cfg, st.Settings(), &fakeStore{}, "1.0.0"); !errors.Is(err, backup.ErrDepositInProgress) {
+		t.Fatalf("second deposit: got %v, want ErrDepositInProgress", err)
+	}
+	close(slow.release)
+	if err := <-done; err != nil {
+		t.Fatalf("first deposit: %v", err)
 	}
 }

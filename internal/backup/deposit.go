@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -16,6 +17,13 @@ const (
 	settingRecoveryToken = "kyrecovery_token"
 	settingLastDeposit   = "kyrecovery_last_deposit"
 )
+
+// ErrDepositInProgress answers a second deposit started while one is still uploading.
+var ErrDepositInProgress = errors.New("backup: a deposit is already in progress")
+
+// depositMu makes deposits single-flight across the scheduler, the admin route and the CLI
+// within one process: two at once would upload the same data twice and race on the receipt.
+var depositMu sync.Mutex
 
 // Depositor is the deposit half of the KyRecovery client, narrowed so callers can stand in
 // a fake without reaching the network.
@@ -67,6 +75,10 @@ func notPaired(err error) error {
 // receipt. The receipt is what a restore is checked against, so it is written only after
 // kyrecovery has confirmed the digest of the bytes sent.
 func DepositBackup(ctx context.Context, cfg *config.Config, settings store.SettingsStore, client Depositor, appVersion string) (Receipt, capsule.Manifest, error) {
+	if !depositMu.TryLock() {
+		return Receipt{}, capsule.Manifest{}, ErrDepositInProgress
+	}
+	defer depositMu.Unlock()
 	pairing, err := LoadPairing(ctx, cfg.Database.DataDir, settings)
 	if err != nil {
 		return Receipt{}, capsule.Manifest{}, err

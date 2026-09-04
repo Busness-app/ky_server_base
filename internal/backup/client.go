@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -14,8 +15,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -133,8 +136,7 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return PairingResult{}, fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, string(b))
+		return PairingResult{}, fmt.Errorf("pairing claim rejected (%d): %s", resp.StatusCode, remoteMessage(resp.Body))
 	}
 
 	var claimResp struct {
@@ -204,8 +206,7 @@ func (c *KyRecoveryClient) Deposit(ctx context.Context, serverURL, apiToken stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return Receipt{}, fmt.Errorf("deposit rejected (%d): %s", resp.StatusCode, string(b))
+		return Receipt{}, fmt.Errorf("deposit rejected (%d): %s", resp.StatusCode, remoteMessage(resp.Body))
 	}
 	var rcpt Receipt
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&rcpt); err != nil {
@@ -224,6 +225,40 @@ func (c *KyRecoveryClient) Deposit(ctx context.Context, serverURL, apiToken stri
 	return rcpt, nil
 }
 
+// auditTextLimit bounds any text that reaches the audit log from outside the process.
+const auditTextLimit = 256
+
+// AuditSafe makes a string fit for an audit record: printable characters only, cut at
+// auditTextLimit. Remote bodies and operator input go through it before they are stored,
+// because the audit table rides inside every capsule and grows with whatever lands in it.
+func AuditSafe(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= auditTextLimit {
+			b.WriteString("...")
+			break
+		}
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteByte(' ')
+		case unicode.IsPrint(r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// remoteMessage is what a KyRecovery error body contributes to an error: a bounded, printable
+// excerpt, never the raw body.
+func remoteMessage(body io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(body, 4<<10))
+	return AuditSafe(string(b))
+}
+
+// ErrNoDatabaseSnapshot is returned when the payload cannot carry a consistent copy of the
+// database, so a capsule without one is never sealed as if it were a backup.
+var ErrNoDatabaseSnapshot = errors.New("backup: no consistent database snapshot for this driver")
+
 // Payload is what a backup carries: the members and the metadata the manifest records.
 type Payload struct {
 	ServiceName        string
@@ -236,21 +271,16 @@ type Payload struct {
 // BuildLocalPayload collects local application files (SQLite database, configuration). It
 // carries nothing secret: sealing callers add the sealed-only members with AppendSealedOnlyFiles.
 func BuildLocalPayload(cfg *config.Config, appVersion string) (*Payload, error) {
-	var files []BackupFile
-	var sqlitePaths []string
-
-	// If SQLite is used, read the database file
-	if strings.ToLower(cfg.Database.Driver) == "sqlite" {
-		dbPath := cfg.Database.DSN
-		if idx := strings.Index(dbPath, "?"); idx != -1 {
-			dbPath = dbPath[:idx]
-		}
-		if dbBytes, err := os.ReadFile(dbPath); err == nil {
-			relPath := "data/ky_server.db"
-			files = append(files, BackupFile{Path: relPath, Data: dbBytes, Mode: 0600})
-			sqlitePaths = append(sqlitePaths, relPath)
-		}
+	if strings.ToLower(cfg.Database.Driver) != "sqlite" {
+		return nil, fmt.Errorf("%w: %s", ErrNoDatabaseSnapshot, cfg.Database.Driver)
 	}
+	dbBytes, err := snapshotSQLite(cfg.Database.DSN, cfg.Database.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	const dbPath = "data/ky_server.db"
+	files := []BackupFile{{Path: dbPath, Data: dbBytes, Mode: 0600}}
+	sqlitePaths := []string{dbPath}
 
 	// Include config manifest snapshot
 	cfgJSON, _ := json.MarshalIndent(map[string]any{
@@ -268,7 +298,7 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*Payload, error) 
 			"env":   []string{"KY_PORT", "KY_DB_DRIVER"},
 		},
 		VerificationRecipe: map[string]any{
-			"check_sqlite_integrity": len(sqlitePaths) > 0,
+			"check_sqlite_integrity": true,
 			"sqlite_paths":           sqlitePaths,
 			"required_files":         requiredFiles(files),
 			"expected_env":           []string{"KY_PORT", "KY_DB_DRIVER"},
@@ -277,6 +307,28 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*Payload, error) 
 	}
 
 	return payload, nil
+}
+
+// snapshotSQLite returns a consistent single-file copy of the live database. The store runs
+// in WAL mode, so reading the main file misses every commit still in the -wal and can tear
+// under a concurrent checkpoint; VACUUM INTO writes a transactionally consistent image.
+func snapshotSQLite(dsn, dataDir string) ([]byte, error) {
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	dir, err := os.MkdirTemp(dataDir, "snapshot-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "ky_server.db")
+	// VACUUM INTO takes a filename expression, not a bound parameter.
+	if _, err := db.Exec("VACUUM INTO '" + strings.ReplaceAll(path, "'", "''") + "'"); err != nil {
+		return nil, fmt.Errorf("backup: database snapshot: %w", err)
+	}
+	return os.ReadFile(path)
 }
 
 func requiredFiles(files []BackupFile) []string {

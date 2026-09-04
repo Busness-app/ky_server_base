@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Busness-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
@@ -312,7 +314,7 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 // A recovery.pub swapped under a live instance must stop the export, not produce a capsule
 // sealed to a key the suite's custodians cannot open.
 func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
-	srv, st, cfg := setupTestServer(t)
+	srv, st, cfg := setupSQLiteServer(t)
 	ctx := context.Background()
 
 	pinned, err := recoverykey.Generate()
@@ -353,7 +355,7 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 // A database that has outgrown the capsule's per-member cap must say so: an operator whose
 // backups have silently stopped working needs the limit, not a bare 500.
 func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
-	srv, st, cfg := setupTestServer(t)
+	srv, st, cfg := setupSQLiteServer(t)
 	ctx := context.Background()
 
 	key, err := recoverykey.Generate()
@@ -365,17 +367,17 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A sparse file one byte past the per-member cap: os.Truncate makes it instantly, and the
-	// cap is on len(Content), which a sparse read fills with zeroes all the same.
+	// A real database one blob past the per-member cap: the collector snapshots with VACUUM
+	// INTO, so the file has to be a database, and zeroblob makes a large one instantly.
 	big := filepath.Join(t.TempDir(), "oversized.db")
-	f, err := os.Create(big)
+	db, err := sql.Open("sqlite", big)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = f.Close()
-	if err := os.Truncate(big, backup.MaxCapsuleFileBytes+1); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("CREATE TABLE big(b BLOB); INSERT INTO big VALUES (zeroblob(%d))", backup.MaxCapsuleFileBytes+1)); err != nil {
 		t.Fatal(err)
 	}
+	_ = db.Close()
 	cfg.Database.Driver = "sqlite"
 	cfg.Database.DSN = big
 
@@ -736,8 +738,16 @@ func adminPost(t *testing.T, srv *api.Server, session *http.Cookie, path string)
 	return w
 }
 
+// setupSQLiteServer is setupTestServer pinned to SQLite: deposits snapshot the database, and
+// only the SQLite path can. The Postgres CI job would otherwise (correctly) refuse them.
+func setupSQLiteServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
+	t.Helper()
+	t.Setenv("KY_TEST_POSTGRES_DSN", "")
+	return setupTestServer(t)
+}
+
 func TestDepositRequiresAPairing(t *testing.T) {
-	srv, st, _ := setupTestServer(t)
+	srv, st, _ := setupSQLiteServer(t)
 	fake := &fakeDepositor{}
 	api.SetRecoveryClientForTest(srv, fake)
 	session := loginAs(t, srv, st, "alice", "admin")
@@ -750,7 +760,7 @@ func TestDepositRequiresAPairing(t *testing.T) {
 }
 
 func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
-	srv, st, cfg := setupTestServer(t)
+	srv, st, cfg := setupSQLiteServer(t)
 	ctx := context.Background()
 	priv, err := recoverykey.Generate()
 	if err != nil {
@@ -795,12 +805,73 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 		t.Error("no backup.deposited audit record for the acting admin")
 	}
 
-	// A refusal by the store is reported, audited, and leaves the receipt untouched.
-	fake.err = errors.New("deposit rejected (429): too many deposits")
+	// A refusal by the store is reported, audited with a bounded message, and leaves the
+	// receipt untouched.
+	fake.err = errors.New("deposit rejected (502): " + strings.Repeat("<html>", 20000) + "\x00\x1b")
 	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
 		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
 	}
 	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
 		t.Error("a refused deposit replaced the last receipt")
+	}
+	records, _, _ = st.Audit().ListAuditRecords(ctx, 0, 50)
+	var failed *store.AuditRecord
+	for _, rec := range records {
+		if rec.Action == "backup.deposit_failed" {
+			failed = rec
+		}
+	}
+	if failed == nil {
+		t.Fatal("no backup.deposit_failed record")
+	}
+	if len(failed.Details) > 300 || strings.ContainsAny(failed.Details, "\x00\x1b") {
+		t.Errorf("audit details are %d bytes with control characters: %.60q", len(failed.Details), failed.Details)
+	}
+}
+
+// cancellingDepositor cancels the request while the upload is in flight, the way a closed
+// browser tab does, and reports whether its own context survived.
+type cancellingDepositor struct {
+	fakeDepositor
+	cancel context.CancelFunc
+	err    error
+}
+
+func (c *cancellingDepositor) Deposit(ctx context.Context, url, token string, container []byte) (backup.Receipt, error) {
+	c.cancel()
+	c.err = ctx.Err()
+	return c.fakeDepositor.Deposit(ctx, url, token, container)
+}
+
+// Once bytes are on their way the deposit must finish and record its receipt even if the
+// admin's connection is gone; otherwise KyRecovery holds a capsule this instance has no
+// record of, which is the value a restore is checked against.
+func TestDepositOutlivesTheRequest(t *testing.T) {
+	srv, st, cfg := setupSQLiteServer(t)
+	ctx := context.Background()
+	priv, _ := recoverykey.Generate()
+	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StorePairing(ctx, st.Settings(), "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	fake := &cancellingDepositor{cancel: cancel}
+	api.SetRecoveryClientForTest(srv, fake)
+
+	req := httptest.NewRequest("POST", "/api/backup/deposit", nil).WithContext(reqCtx)
+	req.AddCookie(loginAs(t, srv, st, "alice", "admin"))
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
+	req.Header.Set(auth.HeaderCSRF, "test-csrf")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if fake.err != nil {
+		t.Fatalf("the upload context was cancelled with the request: %v", fake.err)
+	}
+	if _, ok, _ := backup.LastDeposit(ctx, st.Settings()); !ok {
+		t.Fatal("no receipt recorded after the request went away")
 	}
 }

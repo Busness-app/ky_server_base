@@ -120,6 +120,17 @@ func TestDepositReportsARefusal(t *testing.T) {
 	}
 }
 
+// A misbehaving store's error page must not ride into the error string, and from there into
+// the audit log, at full size.
+func TestDepositErrorQuotesABoundedPrintableExcerpt(t *testing.T) {
+	huge := "<html>" + strings.Repeat("x", 64<<10) + "\x00\x07"
+	client := backup.NewClientWithTransportForTest(&recorder{status: http.StatusBadGateway, body: func([]byte) string { return huge }})
+	_, err := client.Deposit(context.Background(), "https://recovery.busnes.app", "tok", []byte("x"))
+	if err == nil || len(err.Error()) > 400 || strings.ContainsAny(err.Error(), "\x00\x07") {
+		t.Fatalf("error is %d bytes: %.80q", len(fmt.Sprint(err)), fmt.Sprint(err))
+	}
+}
+
 func TestDepositRefusesAnUnsafeURL(t *testing.T) {
 	client := backup.NewClientWithTransportForTest(&recorder{status: http.StatusCreated, body: func(sent []byte) string { return receiptFor(sent, "c") }})
 	for _, u := range []string{"http://recovery.busnes.app", "https://127.0.0.1:8095", "https://10.0.0.5", "https://user:pw@recovery.busnes.app"} {

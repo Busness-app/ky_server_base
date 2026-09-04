@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky_server_base/internal/backup"
@@ -26,6 +28,12 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, err := backup.CollectSealable(s.config, appVersion)
+	if errors.Is(err, backup.ErrNoDatabaseSnapshot) {
+		// An honest failed drill, not a 500: the operator needs to read why no backup exists.
+		s.writeJSON(w, http.StatusOK, &backup.DrillResult{Passed: false, ErrorMessage: err.Error(),
+			Checks: []backup.CheckItem{{Name: "Database", Passed: false, Message: err.Error()}}})
+		return
+	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
@@ -51,6 +59,10 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 // shares open it, so the download is safe to store anywhere; kyrecovery is where it belongs.
 func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 	payload, err := backup.CollectSealable(s.config, appVersion)
+	if errors.Is(err, backup.ErrNoDatabaseSnapshot) {
+		s.writeError(w, http.StatusPreconditionFailed, err.Error())
+		return
+	}
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
@@ -88,26 +100,39 @@ func (s *Server) handleExportCapsule(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
+// depositWriteBudget is how long the admin's connection may stay open for the receipt: the
+// upload budget plus room for sealing. The listener's WriteTimeout is sized for JSON replies.
+const depositWriteBudget = 16 * time.Minute
+
 // handleDepositBackup seals a capsule and deposits it with KyRecovery now, outside the
 // schedule. The receipt it returns is what a restore is later checked against.
+//
+// The deposit runs on a context that outlives the request: once bytes are on their way, a
+// browser closing the tab must not leave KyRecovery holding a capsule this instance has no
+// receipt for.
 func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	rcpt, m, err := backup.DepositBackup(r.Context(), s.config, s.store.Settings(), s.recovery, appVersion)
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(depositWriteBudget))
+	rcpt, m, err := backup.DepositBackup(context.WithoutCancel(r.Context()), s.config, s.store.Settings(), s.recovery, appVersion)
 	if err != nil {
 		s.auditBackup(r, "backup.deposit_failed", m.CapsuleID, err.Error())
 		switch {
 		case errors.Is(err, backup.ErrNotPaired):
 			s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery")
+		case errors.Is(err, backup.ErrNoDatabaseSnapshot):
+			s.writeError(w, http.StatusPreconditionFailed, err.Error())
+		case errors.Is(err, backup.ErrDepositInProgress):
+			s.writeError(w, http.StatusConflict, "A deposit is already in progress")
 		case errors.Is(err, backup.ErrRecoveryKeyMismatch):
 			s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
 		case errors.Is(err, capsule.ErrCapsuleTooLarge):
 			s.writeError(w, http.StatusRequestEntityTooLarge, backup.TooLargeMessage)
 		default:
 			// The cause is audited; the browser gets only that the store did not take it.
-			log.Printf("[BACKUP] deposit failed: %v", err)
+			log.Printf("[BACKUP] deposit failed: %s", backup.AuditSafe(err.Error()))
 			s.writeError(w, http.StatusBadGateway, "KyRecovery did not accept the deposit")
 		}
 		return
@@ -117,8 +142,10 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // auditBackup records a backup event against the acting admin. Details never carry the
-// token or capsule bytes; errors from the client name statuses and IDs only.
+// token or capsule bytes, and both text fields are bounded and printable before they are
+// stored: a resource may be an operator-typed URL and details may quote a remote body.
 func (s *Server) auditBackup(r *http.Request, action, resource, details string) {
+	resource, details = backup.AuditSafe(resource), backup.AuditSafe(details)
 	var userID string
 	if user, _, err := s.sessions.AuthenticateRequest(r); err == nil {
 		userID = user.ID
