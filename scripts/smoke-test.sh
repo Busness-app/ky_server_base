@@ -125,6 +125,8 @@ contains "admin settings include db_driver" "$(curl -s -b "$WORK/cookies" "$BASE
 check "admin export-capsule refuses while unpaired" "$(status -b "$WORK/cookies" "$BASE/api/backup/export-capsule")" "412"
 contains "export-capsule says why it refused" \
   "$(curl -s -b "$WORK/cookies" "$BASE/api/backup/export-capsule")" "Not paired with KyRecovery"
+check "deposit CLI refuses while unpaired" \
+  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" deposit >/dev/null 2>&1 && echo 0 || echo 1)" "1"
 CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
 check "cookie write rejects missing CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/devices/pair/init")" "403"
 check "device pairing init" "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -X POST "$BASE/api/devices/pair/init")" "200"

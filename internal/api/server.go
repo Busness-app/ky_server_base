@@ -19,10 +19,11 @@ import (
 	"github.com/Busness-app/ky_server_base/web"
 )
 
-// recoveryPairer is the pairing half of the KyRecovery client, narrowed so tests can stand in
-// a fake without reaching the network.
-type recoveryPairer interface {
-	ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (backup.PairingResult, error)
+// recoveryClient is the KyRecovery client as the handlers use it, narrowed so tests can stand
+// in a fake without reaching the network.
+type recoveryClient interface {
+	ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (backup.PairingResult, error)
+	backup.Depositor
 }
 
 type Server struct {
@@ -34,7 +35,7 @@ type Server struct {
 	oidc       *sso.GenericOIDCClient
 	saml       *sso.SAMLServiceProvider
 	scim       *scim.Server
-	recovery   recoveryPairer
+	recovery   recoveryClient
 	mux        *http.ServeMux
 	attemptsMu sync.Mutex
 	attempts   map[string]attemptWindow
@@ -157,6 +158,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/backup/drill", s.requireAdmin(s.handleBackupDrill))
 	s.mux.HandleFunc("/api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
 	s.mux.HandleFunc("/api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
+	s.mux.HandleFunc("/api/backup/deposit", s.requireAdmin(s.handleDepositBackup))
 
 	// Settings & Theme. The read endpoint tiers its own payload by role.
 	s.mux.HandleFunc("/api/settings", s.handleGetSettings)

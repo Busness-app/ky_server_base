@@ -10,7 +10,8 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 - All JSON API endpoints return structured errors `{"error": "message"}` upon failure.
 - Non-API routes fall back to serving `web.Handler()` for client-side SPA routing.
 - New routes are unauthenticated only by deliberate choice; privileged ones are registered wrapped in `s.requireAdmin` in `routes()`, so the trust level of every route is readable in one place.
-- Backup routes (drill, export-capsule, pair-remote) and theme writes are admin-only: capsules and settings carry site data and secrets.
+- Backup routes (drill, export-capsule, pair-remote, deposit) and theme writes are admin-only: capsules and settings carry site data and secrets.
+- `POST /api/backup/deposit` seals and deposits now and returns the receipt: 412 unpaired, 409 key mismatch, 413 over the capsule caps, 502 when KyRecovery refused. Pairing and deposit outcomes are audited as `backup.paired`, `backup.pair_failed`, `backup.deposited`, `backup.deposit_failed`; details carry key or capsule IDs and digests, never the token.
 - Rate-limit keys for `login:`, `mfa:` and `pair:` come from `auth.ClientIP`, never from `RemoteAddr` or a raw header, so a limit is neither shared by everyone behind a proxy nor bypassable by forging `X-Forwarded-For`.
 - CORS permits only the exact configured `KY_APP_URL` origin and credentialed browser writes require matching CSRF cookie/header tokens.
 - API request bodies are capped at 1 MiB and all responses receive baseline CSP, anti-framing, MIME-sniffing, and referrer-policy headers.

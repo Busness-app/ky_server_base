@@ -3,7 +3,11 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"github.com/Busness-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -235,8 +239,12 @@ type fakePairer struct {
 	result backup.PairingResult
 }
 
-func (f fakePairer) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (backup.PairingResult, error) {
+func (f fakePairer) ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (backup.PairingResult, error) {
 	return f.result, nil
+}
+
+func (f fakePairer) Deposit(context.Context, string, string, []byte) (backup.Receipt, error) {
+	return backup.Receipt{}, errors.New("fakePairer does not deposit")
 }
 
 func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
@@ -693,5 +701,106 @@ func TestSessionIPIgnoresForgedForwardedFor(t *testing.T) {
 	}
 	if sess.IPAddress != "203.0.113.5" {
 		t.Errorf("session bound to %q, want the peer 203.0.113.5: a header decided the address", sess.IPAddress)
+	}
+}
+
+// fakeDepositor is kyrecovery's deposit route: it answers with the receipt the real server
+// would for the bytes it received.
+type fakeDepositor struct {
+	fakePairer
+	err error
+	got []byte
+}
+
+func (f *fakeDepositor) Deposit(_ context.Context, _, _ string, container []byte) (backup.Receipt, error) {
+	f.got = container
+	if f.err != nil {
+		return backup.Receipt{}, f.err
+	}
+	m, err := capsule.ReadUnverifiedManifest(container)
+	if err != nil {
+		return backup.Receipt{}, err
+	}
+	sum := sha256.Sum256(container)
+	return backup.Receipt{CapsuleID: m.CapsuleID, Digest: hex.EncodeToString(sum[:]), SizeBytes: int64(len(container)), DepositedAt: time.Now().UTC()}, nil
+}
+
+func adminPost(t *testing.T, srv *api.Server, session *http.Cookie, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, nil)
+	req.AddCookie(session)
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
+	req.Header.Set(auth.HeaderCSRF, "test-csrf")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestDepositRequiresAPairing(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	fake := &fakeDepositor{}
+	api.SetRecoveryClientForTest(srv, fake)
+	session := loginAs(t, srv, st, "alice", "admin")
+	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("unpaired deposit: got %d, want 412: %s", w.Code, w.Body.String())
+	}
+	if fake.got != nil {
+		t.Error("an unpaired instance sent bytes to the store")
+	}
+}
+
+func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	priv, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.StorePairing(ctx, st.Settings(), "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeDepositor{}
+	api.SetRecoveryClientForTest(srv, fake)
+	session := loginAs(t, srv, st, "alice", "admin")
+
+	w := adminPost(t, srv, session, "/api/backup/deposit")
+	if w.Code != http.StatusOK {
+		t.Fatalf("deposit: got %d: %s", w.Code, w.Body.String())
+	}
+	var rcpt backup.Receipt
+	if err := json.Unmarshal(w.Body.Bytes(), &rcpt); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := capsule.Open(fake.got, priv, t.TempDir()); err != nil {
+		t.Fatalf("what the store received does not open with the suite key: %v", err)
+	}
+	last, ok, err := backup.LastDeposit(ctx, st.Settings())
+	if err != nil || !ok || last.CapsuleID != rcpt.CapsuleID {
+		t.Errorf("last deposit: %+v %v %v, want %s", last, ok, err, rcpt.CapsuleID)
+	}
+	records, _, err := st.Audit().ListAuditRecords(ctx, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var audited bool
+	for _, rec := range records {
+		if rec.Action == "backup.deposited" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Error("no backup.deposited audit record for the acting admin")
+	}
+
+	// A refusal by the store is reported, audited, and leaves the receipt untouched.
+	fake.err = errors.New("deposit rejected (429): too many deposits")
+	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
+		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
+		t.Error("a refused deposit replaced the last receipt")
 	}
 }

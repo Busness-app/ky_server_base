@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,7 +29,11 @@ const encryptionKeyPath = "data/encryption.key"
 // <DataDir>/recovery.pub that RecoveryKeyPath reads.
 const recoveryPubPath = "data/recovery.pub"
 
-// KyRecoveryClient implements the Zero-Code Pairing & Push client contract.
+// uploadTimeout bounds one deposit. A container is at most 384 MiB and kyrecovery gives the
+// read fifteen minutes; the claim keeps the short timeout because it carries a few hundred bytes.
+const uploadTimeout = 15 * time.Minute
+
+// KyRecoveryClient is the product half of the pairing and deposit contract.
 type KyRecoveryClient struct {
 	client *http.Client
 }
@@ -77,6 +82,17 @@ func isPublicIP(ip net.IP) bool {
 	return ip != nil && !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !ip.IsLinkLocalMulticast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
+// endpoint joins the server URL and an API path after checking the URL is one the client is
+// willing to talk to.
+func endpoint(serverURL, path string) (string, error) {
+	u := strings.TrimRight(serverURL, "/") + path
+	parsed, err := url.Parse(u)
+	if err != nil || validateRecoveryURL(parsed) != nil {
+		return "", errors.New("invalid recovery URL")
+	}
+	return u, nil
+}
+
 // PairingResult is what a completed pairing yields: the bearer token for deposits and the
 // suite recovery public key with its custodian topology. A claim that returns no key is not a
 // completed pairing.
@@ -87,21 +103,24 @@ type PairingResult struct {
 
 // ClaimPairing exchanges a 6-digit ephemeral pairing PIN with KyRecovery server for a permanent
 // API bearer token and the suite recovery public key to seal backups to.
-func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, appName string) (PairingResult, error) {
-	serverURL = strings.TrimRight(serverURL, "/")
-	endpoint := fmt.Sprintf("%s/api/pairing/claim", serverURL)
-	parsedEndpoint, err := url.Parse(endpoint)
-	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
-		return PairingResult{}, errors.New("invalid recovery URL")
+//
+// serviceName is sent explicitly: kyrecovery pins whatever the claimer sends and refuses every
+// later deposit whose manifest names a different service, so it must be the same value Seal
+// is given.
+func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (PairingResult, error) {
+	u, err := endpoint(serverURL, "/api/pairing/claim")
+	if err != nil {
+		return PairingResult{}, err
 	}
 
 	reqBody := map[string]string{
 		"pairing_code": strings.TrimSpace(pairingCode),
+		"service_name": serviceName,
 		"app_name":     appName,
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return PairingResult{}, err
 	}
@@ -148,81 +167,76 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 	}, nil
 }
 
-// PushBackupPayload defines the self-declaring backup ingest schema.
-type PushBackupPayload struct {
-	ServiceName        string                 `json:"service_name"`
-	AppVersion         string                 `json:"app_version"`
-	Threshold          int                    `json:"threshold"`
-	TotalShares        int                    `json:"total_shares"`
-	Files              []PushBackupFile       `json:"files"`
-	Dependencies       map[string]interface{} `json:"dependencies"`
-	VerificationRecipe map[string]interface{} `json:"verification_recipe"`
+// Receipt is kyrecovery's record of one deposit. Digest and SizeBytes are the only values
+// the store computed itself; a restore compares CapsuleID against the capsule in hand.
+type Receipt struct {
+	CapsuleID   string    `json:"capsule_id"`
+	Digest      string    `json:"digest"`
+	SizeBytes   int64     `json:"size_bytes"`
+	DepositedAt time.Time `json:"deposited_at"`
 }
 
-type PushBackupFile struct {
-	Path       string `json:"path"`
-	DataBase64 string `json:"data_base64"`
-	Mode       int64  `json:"mode"`
-}
-
-type PushResponse struct {
-	Status       string      `json:"status"`
-	CapsuleID    string      `json:"capsule_id"`
-	ServiceName  string      `json:"service_name"`
-	SizeBytes    int64       `json:"size_bytes"`
-	PayloadHash  string      `json:"payload_hash"`
-	DrillSummary DrillResult `json:"drill_summary"`
-}
-
-// PushBackup pushes a self-declaring backup payload to the remote KyRecovery instance.
-//
-// It transmits the payload in plaintext over TLS, so it must never be handed a payload that
-// AppendSealedOnlyFiles has touched: those members are only safe inside a sealed capsule.
-// Plan 5 replaces this call with a sealed-capsule deposit.
-func (c *KyRecoveryClient) PushBackup(ctx context.Context, serverURL, apiToken string, payload PushBackupPayload) (*PushResponse, error) {
-	serverURL = strings.TrimRight(serverURL, "/")
-	endpoint := fmt.Sprintf("%s/api/backup/push", serverURL)
-	parsedEndpoint, err := url.Parse(endpoint)
-	if err != nil || validateRecoveryURL(parsedEndpoint) != nil {
-		return nil, errors.New("invalid recovery URL")
-	}
-
-	bodyBytes, err := json.Marshal(payload)
+// Deposit hands a sealed container to kyrecovery and returns its receipt. The container is
+// opaque to the store; the receipt's digest is checked against the bytes sent so a deposit
+// counts only when kyrecovery stored exactly what left here. 200 is kyrecovery re-sending the
+// receipt for bytes it already holds, which is a success.
+func (c *KyRecoveryClient) Deposit(ctx context.Context, serverURL, apiToken string, container []byte) (Receipt, error) {
+	u, err := endpoint(serverURL, "/api/backup/deposit")
 	if err != nil {
-		return nil, err
+		return Receipt{}, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	ctx, cancel := context.WithTimeout(ctx, uploadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(container))
 	if err != nil {
-		return nil, err
+		return Receipt{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiToken)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/octet-stream")
 
-	resp, err := c.client.Do(req)
+	// The client's own timeout is sized for a claim; the upload budget is the context above.
+	upload := *c.client
+	upload.Timeout = 0
+	resp, err := upload.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("backup push failed: %w", err)
+		return Receipt{}, fmt.Errorf("deposit request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return nil, fmt.Errorf("backup push rejected (%d): %s", resp.StatusCode, string(b))
+		return Receipt{}, fmt.Errorf("deposit rejected (%d): %s", resp.StatusCode, string(b))
 	}
-
-	var pushResp PushResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&pushResp); err != nil {
-		return nil, err
+	var rcpt Receipt
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&rcpt); err != nil {
+		return Receipt{}, err
 	}
-
-	return &pushResp, nil
+	sum := sha256.Sum256(container)
+	if want := hex.EncodeToString(sum[:]); rcpt.Digest != want {
+		return Receipt{}, fmt.Errorf("deposit receipt digest %s does not match the container sent (%s)", rcpt.Digest, want)
+	}
+	if rcpt.SizeBytes != int64(len(container)) {
+		return Receipt{}, fmt.Errorf("deposit receipt size %d does not match the %d bytes sent", rcpt.SizeBytes, len(container))
+	}
+	if rcpt.CapsuleID == "" {
+		return Receipt{}, errors.New("deposit receipt has no capsule_id")
+	}
+	return rcpt, nil
 }
 
-// BuildLocalPayload collects local application files (SQLite database, configuration) into a
-// self-declaring backup package. It carries nothing secret: sealing callers add the
-// sealed-only members with AppendSealedOnlyFiles.
-func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayload, error) {
-	var files []PushBackupFile
+// Payload is what a backup carries: the members and the metadata the manifest records.
+type Payload struct {
+	ServiceName        string
+	AppVersion         string
+	Files              []BackupFile
+	Dependencies       map[string]any
+	VerificationRecipe map[string]any
+}
+
+// BuildLocalPayload collects local application files (SQLite database, configuration). It
+// carries nothing secret: sealing callers add the sealed-only members with AppendSealedOnlyFiles.
+func BuildLocalPayload(cfg *config.Config, appVersion string) (*Payload, error) {
+	var files []BackupFile
 	var sqlitePaths []string
 
 	// If SQLite is used, read the database file
@@ -233,11 +247,7 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 		}
 		if dbBytes, err := os.ReadFile(dbPath); err == nil {
 			relPath := "data/ky_server.db"
-			files = append(files, PushBackupFile{
-				Path:       relPath,
-				DataBase64: base64.StdEncoding.EncodeToString(dbBytes),
-				Mode:       0600,
-			})
+			files = append(files, BackupFile{Path: relPath, Data: dbBytes, Mode: 0600})
 			sqlitePaths = append(sqlitePaths, relPath)
 		}
 	}
@@ -247,32 +257,20 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 		"server":   cfg.Server,
 		"database": map[string]any{"driver": cfg.Database.Driver},
 	}, "", "  ")
+	files = append(files, BackupFile{Path: "config/settings.json", Data: cfgJSON, Mode: 0600})
 
-	files = append(files, PushBackupFile{
-		Path:       "config/settings.json",
-		DataBase64: base64.StdEncoding.EncodeToString(cfgJSON),
-		Mode:       0600,
-	})
-
-	var reqFiles []string
-	for _, f := range files {
-		reqFiles = append(reqFiles, f.Path)
-	}
-
-	payload := &PushBackupPayload{
+	payload := &Payload{
 		ServiceName: cfg.Server.AppName,
 		AppVersion:  appVersion,
-		Threshold:   2,
-		TotalShares: 3,
 		Files:       files,
-		Dependencies: map[string]interface{}{
+		Dependencies: map[string]any{
 			"ports": []int{cfg.Server.Port},
 			"env":   []string{"KY_PORT", "KY_DB_DRIVER"},
 		},
-		VerificationRecipe: map[string]interface{}{
+		VerificationRecipe: map[string]any{
 			"check_sqlite_integrity": len(sqlitePaths) > 0,
 			"sqlite_paths":           sqlitePaths,
-			"required_files":         reqFiles,
+			"required_files":         requiredFiles(files),
 			"expected_env":           []string{"KY_PORT", "KY_DB_DRIVER"},
 			"expected_ports":         []int{cfg.Server.Port},
 		},
@@ -281,9 +279,17 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 	return payload, nil
 }
 
+func requiredFiles(files []BackupFile) []string {
+	req := make([]string, 0, len(files))
+	for _, f := range files {
+		req = append(req, f.Path)
+	}
+	return req
+}
+
 // AppendSealedOnlyFiles adds the payload members that may only ever travel inside a sealed
-// capsule, and re-derives required_files so a restore drill still checks for them. Call it
-// from the sealing collectors only; never from anything that reaches PushBackup.
+// capsule, and re-derives required_files so a restore drill still checks for them. Nothing
+// that returns from here may leave the process except through Seal.
 //
 // The encryption key must ride along: users.totp_secret_enc is AES-GCM under it, so a capsule
 // without it restores a database whose MFA secrets are unreadable forever. The capsule is
@@ -293,28 +299,33 @@ func BuildLocalPayload(cfg *config.Config, appVersion string) (*PushBackupPayloa
 // The suite recovery public key rides along when this instance is paired. Without it a restore
 // comes back with the settings pin but no file, which reads as "not paired" and steers the
 // operator into a re-pair. Unpaired instances simply omit it, so a drill still runs.
-func AppendSealedOnlyFiles(cfg *config.Config, payload *PushBackupPayload) error {
+func AppendSealedOnlyFiles(cfg *config.Config, payload *Payload) error {
 	if len(cfg.Security.EncryptionKey) != 32 {
 		return fmt.Errorf("backup: encryption key is %d bytes, want 32; refusing to seal a capsule that cannot decrypt what it restores", len(cfg.Security.EncryptionKey))
 	}
-	payload.Files = append(payload.Files, PushBackupFile{
-		Path:       encryptionKeyPath,
-		DataBase64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n")),
-		Mode:       0600,
+	payload.Files = append(payload.Files, BackupFile{
+		Path: encryptionKeyPath,
+		Data: []byte(hex.EncodeToString(cfg.Security.EncryptionKey) + "\n"),
+		Mode: 0600,
 	})
 
 	if pub, err := os.ReadFile(RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
-		payload.Files = append(payload.Files, PushBackupFile{
-			Path:       recoveryPubPath,
-			DataBase64: base64.StdEncoding.EncodeToString(pub),
-			Mode:       0600,
-		})
+		payload.Files = append(payload.Files, BackupFile{Path: recoveryPubPath, Data: pub, Mode: 0600})
 	}
 
-	reqFiles := make([]string, 0, len(payload.Files))
-	for _, f := range payload.Files {
-		reqFiles = append(reqFiles, f.Path)
-	}
-	payload.VerificationRecipe["required_files"] = reqFiles
+	payload.VerificationRecipe["required_files"] = requiredFiles(payload.Files)
 	return nil
+}
+
+// CollectSealable is the payload every sealing caller uses: the local files plus the
+// sealed-only members. It never reaches the wire except inside a capsule.
+func CollectSealable(cfg *config.Config, appVersion string) (*Payload, error) {
+	payload, err := BuildLocalPayload(cfg, appVersion)
+	if err != nil {
+		return nil, err
+	}
+	if err := AppendSealedOnlyFiles(cfg, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }

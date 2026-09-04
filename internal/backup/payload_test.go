@@ -2,7 +2,6 @@ package backup_test
 
 import (
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -32,7 +31,7 @@ func payloadConfig(t *testing.T) (*config.Config, []byte) {
 
 // sealingPayload is what the sealing collectors assemble: the local payload plus the members
 // that may only travel inside a capsule.
-func sealingPayload(t *testing.T, cfg *config.Config) *backup.PushBackupPayload {
+func sealingPayload(t *testing.T, cfg *config.Config) *backup.Payload {
 	t.Helper()
 	payload, err := backup.BuildLocalPayload(cfg, "1.0.0")
 	if err != nil {
@@ -44,9 +43,9 @@ func sealingPayload(t *testing.T, cfg *config.Config) *backup.PushBackupPayload 
 	return payload
 }
 
-// PushBackup sends the payload in the clear, so BuildLocalPayload alone must carry neither the
-// encryption key nor the recovery public key.
-func TestPushPayloadCarriesNoPlaintextKey(t *testing.T) {
+// BuildLocalPayload alone must carry neither the encryption key nor the recovery public key:
+// only the sealing collectors may add them, so nothing else can leak them by accident.
+func TestLocalPayloadCarriesNoKeys(t *testing.T) {
 	cfg, _ := payloadConfig(t)
 	cfg.Database.DataDir = t.TempDir()
 	priv, err := recoverykey.Generate()
@@ -64,7 +63,7 @@ func TestPushPayloadCarriesNoPlaintextKey(t *testing.T) {
 	req, _ := payload.VerificationRecipe["required_files"].([]string)
 	for _, path := range []string{"data/encryption.key", "data/recovery.pub"} {
 		if findFile(payload.Files, path) != nil {
-			t.Errorf("the push payload carries %s in plaintext", path)
+			t.Errorf("the local payload carries %s", path)
 		}
 		if slices.Contains(req, path) {
 			t.Errorf("required_files: got %v, want no %s", req, path)
@@ -83,12 +82,8 @@ func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
 			continue
 		}
 		found = true
-		got, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := hex.EncodeToString(key) + "\n"; string(got) != want {
-			t.Errorf("content: got %q, want the lowercase hex keyfile reads", got)
+		if want := hex.EncodeToString(key) + "\n"; string(f.Data) != want {
+			t.Errorf("content: got %q, want the lowercase hex keyfile reads", f.Data)
 		}
 		if f.Mode != 0600 {
 			t.Errorf("mode: got %o, want 600", f.Mode)
@@ -108,14 +103,7 @@ func TestPayloadCarriesTheEncryptionKey(t *testing.T) {
 func TestSealedCapsuleRestoresTheEncryptionKey(t *testing.T) {
 	cfg, key := payloadConfig(t)
 	payload := sealingPayload(t, cfg)
-	files := make([]backup.BackupFile, 0, len(payload.Files))
-	for _, f := range payload.Files {
-		data, err := base64.StdEncoding.DecodeString(f.DataBase64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		files = append(files, backup.BackupFile{Path: f.Path, Data: data, Mode: f.Mode})
-	}
+	files := payload.Files
 	priv, err := recoverykey.Generate()
 	if err != nil {
 		t.Fatal(err)
@@ -173,11 +161,7 @@ func TestPayloadCarriesTheRecoveryPublicKeyWhenPaired(t *testing.T) {
 	if f == nil {
 		t.Fatal("paired instance has no data/recovery.pub in the payload")
 	}
-	got, err := base64.StdEncoding.DecodeString(f.DataBase64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(priv.Public().Bytes()) {
+	if string(f.Data) != string(priv.Public().Bytes()) {
 		t.Error("data/recovery.pub is not the pinned public key byte for byte")
 	}
 	if f.Mode != 0600 {
@@ -188,7 +172,7 @@ func TestPayloadCarriesTheRecoveryPublicKeyWhenPaired(t *testing.T) {
 	}
 }
 
-func findFile(files []backup.PushBackupFile, path string) *backup.PushBackupFile {
+func findFile(files []backup.BackupFile, path string) *backup.BackupFile {
 	for i := range files {
 		if files[i].Path == path {
 			return &files[i]

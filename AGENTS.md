@@ -99,10 +99,10 @@ Run the same checks locally with `make ci`; add `make test-postgres` when a Post
 - [internal/auth/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/auth/AGENTS.md): Authentication, MFA (TOTP), recovery codes, sessions, and CAPTCHA.
 - [internal/sso/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
 - [internal/scim/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
-- [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Feature 0 KyBackup capsules and restore drills.
+- [internal/backup/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/backup/AGENTS.md): Feature 0 KyBackup capsules, KyRecovery pairing and deposit, restore drills.
 - [internal/devices/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/devices/AGENTS.md): 90-second ephemeral QR device pairing and push registration.
 - [internal/testdb/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](file:///home/yoshi/git/ky_server_base/internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
 - [web/AGENTS.md](file:///home/yoshi/git/ky_server_base/web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
-- `zero_code_pairing_handoff_spec.md`: contract for pairing a service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. Implement the client half here so every server built on this base inherits it instead of re-implementing per product.
+The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` (v2.0.0, sealed-capsule deposit); the product half lives in `internal/backup` so every server built on this base inherits it.
