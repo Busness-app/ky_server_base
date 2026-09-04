@@ -133,6 +133,8 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
+		case errors.Is(err, backup.ErrKeyPinMissing):
+			s.writeError(w, http.StatusPreconditionFailed, "Paired with KyRecovery but the recovery public key is missing or does not match the pin; restore recovery.pub or re-pair")
 		case errors.Is(err, backup.ErrNotPaired):
 			s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery")
 		case errors.Is(err, backup.ErrNoDatabaseSnapshot):
@@ -218,7 +220,7 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery key")
 		return
 	}
-	if err := backup.StorePairing(r.Context(), s.store.Settings(), req.RecoveryURL, result.APIToken); err != nil {
+	if err := backup.StorePairing(r.Context(), s.store.Settings(), s.config.Security.EncryptionKey, req.RecoveryURL, result.APIToken); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to save recovery pairing")
 		return
 	}

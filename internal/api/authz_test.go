@@ -74,6 +74,9 @@ func TestSettingsExposureByRole(t *testing.T) {
 	if err := st.Settings().SetSetting(context.Background(), "scim_token", "super-secret-bearer"); err != nil {
 		t.Fatalf("seed setting: %v", err)
 	}
+	if err := st.Settings().SetSetting(context.Background(), "kyrecovery_token_enc", "sealed-ciphertext-blob"); err != nil {
+		t.Fatalf("seed setting: %v", err)
+	}
 
 	decode := func(w *httptest.ResponseRecorder) map[string]any {
 		t.Helper()
@@ -112,6 +115,12 @@ func TestSettingsExposureByRole(t *testing.T) {
 	extra, ok := admin["extra_settings"].(map[string]any)
 	if !ok || extra["scim_token"] != "super-secret-bearer" {
 		t.Errorf("admin should still see extra_settings, got %v", admin)
+	}
+	if _, found := extra["kyrecovery_token_enc"]; found {
+		t.Errorf("admin settings leaked the sealed KyRecovery token: %v", admin)
+	}
+	if _, found := extra["kyrecovery_token"]; found {
+		t.Errorf("admin settings leaked a legacy plaintext KyRecovery token: %v", admin)
 	}
 }
 

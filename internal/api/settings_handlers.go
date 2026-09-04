@@ -33,13 +33,17 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	out["scim_enabled"] = s.config.SCIM.Enabled
 	out["db_driver"] = s.config.Database.Driver
 
-	// extra_settings holds secrets such as the SCIM bearer and recovery tokens.
+	// extra_settings holds secrets such as the SCIM bearer token. The KyRecovery pairing
+	// token is sealed at rest and never leaves the process in either form: an admin can see
+	// that a recovery URL is set, never the token that authenticates to it.
 	if user.Role == "admin" {
 		settings, err := s.store.Settings().GetAllSettings(r.Context())
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, "Failed to load settings")
 			return
 		}
+		delete(settings, "kyrecovery_token_enc")
+		delete(settings, "kyrecovery_token")
 		out["extra_settings"] = settings
 	}
 

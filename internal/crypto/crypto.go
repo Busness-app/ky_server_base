@@ -61,6 +61,14 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
+// DeriveKey derives a 32-byte key from master for one specific use, so a value encrypted
+// under one derived key never decrypts under another even if master is shared.
+func DeriveKey(master []byte, label string) []byte {
+	h := hmac.New(sha256.New, master)
+	h.Write([]byte(label))
+	return h.Sum(nil)
+}
+
 // ComputeHMACSHA256 computes HMAC-SHA256 hex string.
 func ComputeHMACSHA256(data []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))

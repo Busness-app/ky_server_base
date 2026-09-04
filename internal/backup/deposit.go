@@ -5,18 +5,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky_server_base/internal/config"
+	"github.com/Busness-app/ky_server_base/internal/crypto"
 	"github.com/Busness-app/ky_server_base/internal/store"
 )
 
+// Settings keys. The token lives under its own key so a value written by an older build,
+// which stored it in the clear, is never mistaken for ciphertext.
 const (
 	settingRecoveryURL   = "kyrecovery_url"
-	settingRecoveryToken = "kyrecovery_token"
+	settingRecoveryToken = "kyrecovery_token_enc"
 	settingLastDeposit   = "kyrecovery_last_deposit"
+
+	// recoveryTokenLabel domain-separates this ciphertext from every other value encrypted
+	// under the deployment key, so a row copied here from elsewhere will not decrypt.
+	recoveryTokenLabel = "ky_server_base:setting:kyrecovery_token"
 )
+
+// ErrKeyPinMissing means the instance has a pairing record but the recovery public key it
+// seals to cannot be resolved: recovery.pub is gone or disagrees with the pin. Unlike
+// ErrNotPaired it is a failure to report, not a quiet skip, because scheduled backups have
+// stopped on an instance the operator believes is covered.
+var ErrKeyPinMissing = errors.New("backup: paired with KyRecovery but the recovery public key is missing or does not match the pin")
 
 // ErrReceiptUnrecorded means KyRecovery holds the capsule but this instance failed to write
 // the receipt. The deposit happened; the caller must say so rather than report a refusal.
@@ -44,17 +58,41 @@ type Pairing struct {
 }
 
 // StorePairing records the server URL and bearer token after StoreRecoveryKey has pinned the
-// key, so a pairing with a key but no token reads as not paired rather than half paired.
-func StorePairing(ctx context.Context, settings store.SettingsStore, serverURL, token string) error {
+// key. The token is the standing credential to the service holding every historical backup,
+// so it is sealed under a key derived for this setting alone: a single database disclosure
+// must not hand it over.
+func StorePairing(ctx context.Context, settings store.SettingsStore, encryptionKey []byte, serverURL, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return errors.New("backup: refusing to store an empty KyRecovery token")
+	}
+	sealed, err := crypto.EncryptAESGCM([]byte(token), crypto.DeriveKey(encryptionKey, recoveryTokenLabel))
+	if err != nil {
+		return fmt.Errorf("backup: failed to encrypt the KyRecovery token: %w", err)
+	}
 	if err := settings.SetSetting(ctx, settingRecoveryURL, serverURL); err != nil {
 		return err
 	}
-	return settings.SetSetting(ctx, settingRecoveryToken, token)
+	return settings.SetSetting(ctx, settingRecoveryToken, sealed)
 }
 
-// LoadPairing returns ErrNotPaired unless the key, URL and token are all present.
-func LoadPairing(ctx context.Context, dataDir string, settings store.SettingsStore) (Pairing, error) {
+// HasPairing reports whether a URL and a sealed token are stored, without decrypting.
+func HasPairing(ctx context.Context, settings store.SettingsStore) bool {
+	u, err := settings.GetSetting(ctx, settingRecoveryURL)
+	if err != nil || u == "" {
+		return false
+	}
+	t, err := settings.GetSetting(ctx, settingRecoveryToken)
+	return err == nil && t != ""
+}
+
+// LoadPairing returns ErrNotPaired unless the key, URL and token are all present, and
+// ErrKeyPinMissing when a pairing record exists but the key it would seal to cannot be
+// resolved.
+func LoadPairing(ctx context.Context, dataDir string, settings store.SettingsStore, encryptionKey []byte) (Pairing, error) {
 	key, err := LoadRecoveryKey(ctx, dataDir, settings)
+	if (errors.Is(err, ErrNotPaired) || errors.Is(err, ErrRecoveryKeyMismatch)) && HasPairing(ctx, settings) {
+		return Pairing{}, fmt.Errorf("%w: %v", ErrKeyPinMissing, err)
+	}
 	if err != nil {
 		return Pairing{}, err
 	}
@@ -62,9 +100,18 @@ func LoadPairing(ctx context.Context, dataDir string, settings store.SettingsSto
 	if p.URL, err = settings.GetSetting(ctx, settingRecoveryURL); err != nil {
 		return Pairing{}, notPaired(err)
 	}
-	if p.Token, err = settings.GetSetting(ctx, settingRecoveryToken); err != nil {
+	sealed, err := settings.GetSetting(ctx, settingRecoveryToken)
+	if err != nil {
 		return Pairing{}, notPaired(err)
 	}
+	if p.URL == "" || sealed == "" {
+		return Pairing{}, ErrNotPaired
+	}
+	plain, err := crypto.DecryptAESGCM(sealed, crypto.DeriveKey(encryptionKey, recoveryTokenLabel))
+	if err != nil {
+		return Pairing{}, fmt.Errorf("backup: the stored KyRecovery token will not decrypt under this deployment's encryption key: %w", err)
+	}
+	p.Token = string(plain)
 	return p, nil
 }
 
@@ -83,7 +130,7 @@ func DepositBackup(ctx context.Context, cfg *config.Config, settings store.Setti
 		return Receipt{}, capsule.Manifest{}, ErrDepositInProgress
 	}
 	defer depositMu.Unlock()
-	pairing, err := LoadPairing(ctx, cfg.Database.DataDir, settings)
+	pairing, err := LoadPairing(ctx, cfg.Database.DataDir, settings, cfg.Security.EncryptionKey)
 	if err != nil {
 		return Receipt{}, capsule.Manifest{}, err
 	}
