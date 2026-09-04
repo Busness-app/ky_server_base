@@ -18,6 +18,10 @@ const (
 	settingLastDeposit   = "kyrecovery_last_deposit"
 )
 
+// ErrReceiptUnrecorded means KyRecovery holds the capsule but this instance failed to write
+// the receipt. The deposit happened; the caller must say so rather than report a refusal.
+var ErrReceiptUnrecorded = errors.New("backup: deposit succeeded but the receipt was not recorded")
+
 // ErrDepositInProgress answers a second deposit started while one is still uploading.
 var ErrDepositInProgress = errors.New("backup: a deposit is already in progress")
 
@@ -96,11 +100,11 @@ func DepositBackup(ctx context.Context, cfg *config.Config, settings store.Setti
 		return Receipt{}, m, err
 	}
 	if rcpt.CapsuleID != m.CapsuleID {
-		return Receipt{}, m, fmt.Errorf("deposit receipt names capsule %s, sent %s", rcpt.CapsuleID, m.CapsuleID)
+		return Receipt{}, m, fmt.Errorf("%w: deposit receipt names capsule %s, sent %s", ErrRemote, rcpt.CapsuleID, m.CapsuleID)
 	}
 	b, _ := json.Marshal(rcpt)
 	if err := settings.SetSetting(ctx, settingLastDeposit, string(b)); err != nil {
-		return rcpt, m, fmt.Errorf("deposit %s succeeded but the receipt was not recorded: %w", rcpt.CapsuleID, err)
+		return rcpt, m, fmt.Errorf("%w: %s: %w", ErrReceiptUnrecorded, rcpt.CapsuleID, err)
 	}
 	return rcpt, m, nil
 }

@@ -89,7 +89,10 @@ func TestDepositIntervalFromEnv(t *testing.T) {
 	}{
 		{"", 24 * time.Hour, true},
 		{"90m", 90 * time.Minute, true},
+		{"15m", 15 * time.Minute, true},
 		{"0", 0, true},
+		{"1s", 0, false},
+		{"14m", 0, false},
 		{"-1h", 0, false},
 		{"daily", 0, false},
 	} {

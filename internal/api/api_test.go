@@ -807,9 +807,14 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 
 	// A refusal by the store is reported, audited with a bounded message, and leaves the
 	// receipt untouched.
-	fake.err = errors.New("deposit rejected (502): " + strings.Repeat("<html>", 20000) + "\x00\x1b")
+	fake.err = fmt.Errorf("%w: deposit rejected (502): %s", backup.ErrRemote, strings.Repeat("<html>", 20000)+"\x00\x1b")
 	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
 		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	// A failure this side of the wire is not a refusal by the store.
+	fake.err = errors.New("something local")
+	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusInternalServerError {
+		t.Fatalf("local failure: got %d, want 500: %s", w.Code, w.Body.String())
 	}
 	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
 		t.Error("a refused deposit replaced the last receipt")

@@ -122,6 +122,13 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 	actor := s.actorID(r)
 	ctx := context.WithoutCancel(r.Context())
 	rcpt, m, err := backup.DepositBackup(ctx, s.config, s.store.Settings(), s.recovery, appVersion)
+	if errors.Is(err, backup.ErrReceiptUnrecorded) {
+		// The store has the capsule; only this side's record is missing. Say that, and audit it
+		// as a deposit, so nobody re-sends a capsule that already exists.
+		s.auditBackup(ctx, actor, r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest+" receipt_unrecorded")
+		s.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Capsule %s was deposited but the receipt could not be recorded locally", rcpt.CapsuleID))
+		return
+	}
 	if err != nil {
 		s.auditBackup(ctx, actor, r, "backup.deposit_failed", m.CapsuleID, err.Error())
 		switch {
@@ -135,10 +142,13 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
 		case errors.Is(err, capsule.ErrCapsuleTooLarge):
 			s.writeError(w, http.StatusRequestEntityTooLarge, backup.TooLargeMessage)
-		default:
+		case errors.Is(err, backup.ErrRemote):
 			// The cause is audited; the browser gets only that the store did not take it.
 			log.Printf("[BACKUP] deposit failed: %s", backup.AuditSafe(err.Error()))
 			s.writeError(w, http.StatusBadGateway, "KyRecovery did not accept the deposit")
+		default:
+			log.Printf("[BACKUP] deposit: seal failed: %s", backup.AuditSafe(err.Error()))
+			s.writeError(w, http.StatusInternalServerError, "Failed to seal capsule")
 		}
 		return
 	}

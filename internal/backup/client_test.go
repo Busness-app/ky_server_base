@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,6 +119,9 @@ func TestDepositReportsARefusal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "service mismatch") {
 		t.Fatalf("got %v, want the status and the server's message", err)
 	}
+	if !errors.Is(err, backup.ErrRemote) {
+		t.Errorf("a refusal is not marked remote: %v", err)
+	}
 }
 
 // A misbehaving store's error page must not ride into the error string, and from there into
@@ -134,8 +138,11 @@ func TestDepositErrorQuotesABoundedPrintableExcerpt(t *testing.T) {
 func TestDepositRefusesAnUnsafeURL(t *testing.T) {
 	client := backup.NewClientWithTransportForTest(&recorder{status: http.StatusCreated, body: func(sent []byte) string { return receiptFor(sent, "c") }})
 	for _, u := range []string{"http://recovery.busnes.app", "https://127.0.0.1:8095", "https://10.0.0.5", "https://user:pw@recovery.busnes.app"} {
-		if _, err := client.Deposit(context.Background(), u, "tok", []byte("x")); err == nil {
+		_, err := client.Deposit(context.Background(), u, "tok", []byte("x"))
+		if err == nil {
 			t.Errorf("%s: accepted", u)
+		} else if errors.Is(err, backup.ErrRemote) {
+			t.Errorf("%s: refused locally but marked remote", u)
 		}
 	}
 }
