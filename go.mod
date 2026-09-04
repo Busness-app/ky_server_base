@@ -3,7 +3,7 @@ module github.com/Busness-app/ky_server_base
 go 1.26.6
 
 require (
-	github.com/Busness-app/ky-primitives v0.4.0
+	github.com/Busness-app/ky-primitives v0.4.1
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/elimity-com/scim v0.0.0-20260728105928-2641426a1539
 	github.com/google/uuid v1.6.0
