@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,5 +157,50 @@ func TestDepositsAreSingleFlight(t *testing.T) {
 	close(slow.release)
 	if err := <-done; err != nil {
 		t.Fatalf("first deposit: %v", err)
+	}
+}
+
+// failingSettings refuses to write one key, the way a full disk or a locked database would.
+type failingSettings struct {
+	store.SettingsStore
+	key string
+}
+
+func (f failingSettings) SetSetting(ctx context.Context, key, val string) error {
+	if key == f.key {
+		return errors.New("disk full")
+	}
+	return f.SettingsStore.SetSetting(ctx, key, val)
+}
+
+// A deposit KyRecovery accepted is a deposit, whichever caller made it: the outcome names it
+// so, carries the receipt, and puts the cause of the missing record on the audit row.
+func TestAnUnrecordedReceiptIsStillADeposit(t *testing.T) {
+	cfg, st := depositConfig(t)
+	pair(t, cfg, st)
+	ctx := context.Background()
+	settings := failingSettings{SettingsStore: st.Settings(), key: "kyrecovery_last_deposit"}
+
+	rcpt, m, err := backup.DepositBackup(ctx, cfg, settings, &fakeStore{}, "1.0.0")
+	if !errors.Is(err, backup.ErrReceiptUnrecorded) {
+		t.Fatalf("got %v, want ErrReceiptUnrecorded", err)
+	}
+	if rcpt.CapsuleID == "" || rcpt.CapsuleID != m.CapsuleID {
+		t.Fatalf("receipt not returned alongside the error: %+v", rcpt)
+	}
+	action, resource, details := backup.Outcome(rcpt, m, err)
+	if action != "backup.deposited" || resource != rcpt.CapsuleID {
+		t.Errorf("outcome %s %s, want backup.deposited %s", action, resource, rcpt.CapsuleID)
+	}
+	if !strings.Contains(details, "receipt_unrecorded") || !strings.Contains(details, "disk full") {
+		t.Errorf("details do not carry the cause: %s", details)
+	}
+	if _, ok, _ := backup.LastDeposit(ctx, st.Settings()); ok {
+		t.Error("a receipt was recorded despite the failing store")
+	}
+
+	action, resource, details = backup.Outcome(backup.Receipt{}, m, errors.New("deposit rejected (503): busy"))
+	if action != "backup.deposit_failed" || resource != m.CapsuleID || details != "deposit rejected (503): busy" {
+		t.Errorf("failure outcome: %s %s %s", action, resource, details)
 	}
 }

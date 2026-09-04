@@ -109,6 +109,20 @@ func DepositBackup(ctx context.Context, cfg *config.Config, settings store.Setti
 	return rcpt, m, nil
 }
 
+// Outcome classifies a DepositBackup result for the audit log, so every caller records the
+// same event for the same result. A capsule KyRecovery holds is "deposited" even when this
+// side failed to write the receipt; the cause rides in the details.
+func Outcome(rcpt Receipt, m capsule.Manifest, err error) (action, resource, details string) {
+	switch {
+	case err == nil:
+		return "backup.deposited", rcpt.CapsuleID, "digest=" + rcpt.Digest
+	case errors.Is(err, ErrReceiptUnrecorded):
+		return "backup.deposited", rcpt.CapsuleID, AuditSafe("digest=" + rcpt.Digest + " receipt_unrecorded: " + err.Error())
+	default:
+		return "backup.deposit_failed", m.CapsuleID, AuditSafe(err.Error())
+	}
+}
+
 // LastDeposit is the most recent receipt, or ok=false when nothing has been deposited.
 func LastDeposit(ctx context.Context, settings store.SettingsStore) (Receipt, bool, error) {
 	v, err := settings.GetSetting(ctx, settingLastDeposit)

@@ -122,15 +122,16 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 	actor := s.actorID(r)
 	ctx := context.WithoutCancel(r.Context())
 	rcpt, m, err := backup.DepositBackup(ctx, s.config, s.store.Settings(), s.recovery, appVersion)
+	action, resource, details := backup.Outcome(rcpt, m, err)
+	s.auditBackup(ctx, actor, r, action, resource, details)
 	if errors.Is(err, backup.ErrReceiptUnrecorded) {
-		// The store has the capsule; only this side's record is missing. Say that, and audit it
-		// as a deposit, so nobody re-sends a capsule that already exists.
-		s.auditBackup(ctx, actor, r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest+" receipt_unrecorded")
+		// The store has the capsule; only this side's record is missing. This is the one path
+		// where the two sides disagree about what exists, so the cause goes on record here too.
+		log.Printf("[BACKUP] deposit %s: receipt not recorded: %s", rcpt.CapsuleID, backup.AuditSafe(err.Error()))
 		s.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Capsule %s was deposited but the receipt could not be recorded locally", rcpt.CapsuleID))
 		return
 	}
 	if err != nil {
-		s.auditBackup(ctx, actor, r, "backup.deposit_failed", m.CapsuleID, err.Error())
 		switch {
 		case errors.Is(err, backup.ErrNotPaired):
 			s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery")
@@ -147,12 +148,13 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[BACKUP] deposit failed: %s", backup.AuditSafe(err.Error()))
 			s.writeError(w, http.StatusBadGateway, "KyRecovery did not accept the deposit")
 		default:
-			log.Printf("[BACKUP] deposit: seal failed: %s", backup.AuditSafe(err.Error()))
-			s.writeError(w, http.StatusInternalServerError, "Failed to seal capsule")
+			// Anything raised before a byte left: a stored URL the client refuses, a store
+			// read, a collector error. The cause is audited; the message does not guess.
+			log.Printf("[BACKUP] deposit failed (local): %s", backup.AuditSafe(err.Error()))
+			s.writeError(w, http.StatusInternalServerError, "Deposit failed before reaching KyRecovery")
 		}
 		return
 	}
-	s.auditBackup(ctx, actor, r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest)
 	s.writeJSON(w, http.StatusOK, rcpt)
 }
 
@@ -161,9 +163,6 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 // stored: a resource may be an operator-typed URL and details may quote a remote body.
 func (s *Server) auditBackup(ctx context.Context, userID string, r *http.Request, action, resource, details string) {
 	resource, details = backup.AuditSafe(resource), backup.AuditSafe(details)
-	if len(resource) > backup.AuditColumnWidth {
-		resource = resource[:backup.AuditColumnWidth]
-	}
 	if err := s.store.Audit().LogAudit(ctx, &store.AuditRecord{
 		UserID:    userID,
 		Action:    action,

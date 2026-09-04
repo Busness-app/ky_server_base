@@ -832,10 +832,19 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
 		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
 	}
-	// A failure this side of the wire is not a refusal by the store.
-	fake.err = errors.New("something local")
-	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusInternalServerError {
+	// A failure this side of the wire is not a refusal by the store, and not a seal failure
+	// either: a pinned URL the client refuses is the operator's problem to see plainly.
+	fake.err = nil
+	if err := backup.StorePairing(ctx, st.Settings(), "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+	api.SetRecoveryClientForTest(srv, backup.NewKyRecoveryClient())
+	w = adminPost(t, srv, session, "/api/backup/deposit")
+	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("local failure: got %d, want 500: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "seal") {
+		t.Errorf("a refused recovery URL was reported as a seal failure: %s", w.Body.String())
 	}
 	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
 		t.Error("a refused deposit replaced the last receipt")
