@@ -122,8 +122,16 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 	actor := s.actorID(r)
 	ctx := context.WithoutCancel(r.Context())
 	rcpt, m, err := backup.DepositBackup(ctx, s.config, s.store.Settings(), s.recovery, appVersion)
+	action, resource, details := backup.Outcome(rcpt, m, err)
+	s.auditBackup(ctx, actor, r, action, resource, details)
+	if errors.Is(err, backup.ErrReceiptUnrecorded) {
+		// The store has the capsule; only this side's record is missing. This is the one path
+		// where the two sides disagree about what exists, so the cause goes on record here too.
+		log.Printf("[BACKUP] deposit %s: receipt not recorded: %s", rcpt.CapsuleID, backup.AuditSafe(err.Error()))
+		s.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Capsule %s was deposited but the receipt could not be recorded locally", rcpt.CapsuleID))
+		return
+	}
 	if err != nil {
-		s.auditBackup(ctx, actor, r, "backup.deposit_failed", m.CapsuleID, err.Error())
 		switch {
 		case errors.Is(err, backup.ErrNotPaired):
 			s.writeError(w, http.StatusPreconditionFailed, "Not paired with KyRecovery")
@@ -135,14 +143,18 @@ func (s *Server) handleDepositBackup(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusConflict, errRecoveryKeyMismatch)
 		case errors.Is(err, capsule.ErrCapsuleTooLarge):
 			s.writeError(w, http.StatusRequestEntityTooLarge, backup.TooLargeMessage)
-		default:
+		case errors.Is(err, backup.ErrRemote):
 			// The cause is audited; the browser gets only that the store did not take it.
 			log.Printf("[BACKUP] deposit failed: %s", backup.AuditSafe(err.Error()))
 			s.writeError(w, http.StatusBadGateway, "KyRecovery did not accept the deposit")
+		default:
+			// Anything raised before a byte left: a stored URL the client refuses, a store
+			// read, a collector error. The cause is audited; the message does not guess.
+			log.Printf("[BACKUP] deposit failed (local): %s", backup.AuditSafe(err.Error()))
+			s.writeError(w, http.StatusInternalServerError, "Deposit failed before reaching KyRecovery")
 		}
 		return
 	}
-	s.auditBackup(ctx, actor, r, "backup.deposited", rcpt.CapsuleID, "digest="+rcpt.Digest)
 	s.writeJSON(w, http.StatusOK, rcpt)
 }
 

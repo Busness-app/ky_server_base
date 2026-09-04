@@ -261,8 +261,10 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 		Key:      backup.RecoveryKey{Public: pub, Threshold: 2, TotalShares: 3},
 	}})
 
+	// A URL longer than the Postgres audit column: the pairing must still be recorded.
+	longURL := "https://recovery.busnes.app/" + strings.Repeat("a", 300)
 	body, _ := json.Marshal(map[string]string{
-		"recovery_url": "https://recovery.busnes.app",
+		"recovery_url": longURL,
 		"pairing_code": "123456",
 	})
 	req := httptest.NewRequest("POST", "/api/backup/pair-remote", bytes.NewReader(body))
@@ -291,6 +293,25 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 	}
 	if got.Public.ID() != pub.ID() || got.Threshold != 2 || got.TotalShares != 3 {
 		t.Errorf("pinned key: got %+v", got)
+	}
+	records, _, err := st.Audit().ListAuditRecords(context.Background(), 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paired *store.AuditRecord
+	for _, rec := range records {
+		if rec.Action == "backup.paired" {
+			paired = rec
+		}
+	}
+	if paired == nil {
+		t.Fatal("no backup.paired audit row for a long recovery URL")
+	}
+	if len(paired.Resource) > backup.AuditColumnWidth || !strings.HasPrefix(paired.Resource, "https://recovery.busnes.app/") {
+		t.Errorf("resource: %d bytes, %.40q", len(paired.Resource), paired.Resource)
+	}
+	if !strings.Contains(paired.Details, "recovery_key_id="+pub.ID()) {
+		t.Errorf("details do not name the key: %s", paired.Details)
 	}
 
 	// Pairing again to a different key must not silently re-point the product.
@@ -807,9 +828,23 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 
 	// A refusal by the store is reported, audited with a bounded message, and leaves the
 	// receipt untouched.
-	fake.err = errors.New("deposit rejected (502): " + strings.Repeat("<html>", 20000) + "\x00\x1b")
+	fake.err = fmt.Errorf("%w: deposit rejected (502): %s", backup.ErrRemote, strings.Repeat("<html>", 20000)+"\x00\x1b")
 	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
 		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	// A failure this side of the wire is not a refusal by the store, and not a seal failure
+	// either: a pinned URL the client refuses is the operator's problem to see plainly.
+	fake.err = nil
+	if err := backup.StorePairing(ctx, st.Settings(), "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
+		t.Fatal(err)
+	}
+	api.SetRecoveryClientForTest(srv, backup.NewKyRecoveryClient())
+	w = adminPost(t, srv, session, "/api/backup/deposit")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("local failure: got %d, want 500: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "seal") {
+		t.Errorf("a refused recovery URL was reported as a seal failure: %s", w.Body.String())
 	}
 	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
 		t.Error("a refused deposit replaced the last receipt")

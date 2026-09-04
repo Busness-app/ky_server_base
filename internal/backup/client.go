@@ -169,6 +169,10 @@ func (c *KyRecoveryClient) ClaimPairing(ctx context.Context, serverURL, pairingC
 	}, nil
 }
 
+// ErrRemote marks an error that came from the wire or from KyRecovery itself, as opposed to
+// one raised here before any byte was sent. Handlers answer the two differently.
+var ErrRemote = errors.New("backup: KyRecovery")
+
 // Receipt is kyrecovery's record of one deposit. Digest and SizeBytes are the only values
 // the store computed itself; a restore compares CapsuleID against the capsule in hand.
 type Receipt struct {
@@ -201,32 +205,37 @@ func (c *KyRecoveryClient) Deposit(ctx context.Context, serverURL, apiToken stri
 	upload.Timeout = 0
 	resp, err := upload.Do(req)
 	if err != nil {
-		return Receipt{}, fmt.Errorf("deposit request failed: %w", err)
+		return Receipt{}, fmt.Errorf("%w: deposit request failed: %w", ErrRemote, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return Receipt{}, fmt.Errorf("deposit rejected (%d): %s", resp.StatusCode, remoteMessage(resp.Body))
+		return Receipt{}, fmt.Errorf("%w: deposit rejected (%d): %s", ErrRemote, resp.StatusCode, remoteMessage(resp.Body))
 	}
 	var rcpt Receipt
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&rcpt); err != nil {
-		return Receipt{}, err
+		return Receipt{}, fmt.Errorf("%w: deposit receipt: %w", ErrRemote, err)
 	}
 	sum := sha256.Sum256(container)
 	if want := hex.EncodeToString(sum[:]); rcpt.Digest != want {
-		return Receipt{}, fmt.Errorf("deposit receipt digest %s does not match the container sent (%s)", rcpt.Digest, want)
+		return Receipt{}, fmt.Errorf("%w: deposit receipt digest %s does not match the container sent (%s)", ErrRemote, rcpt.Digest, want)
 	}
 	if rcpt.SizeBytes != int64(len(container)) {
-		return Receipt{}, fmt.Errorf("deposit receipt size %d does not match the %d bytes sent", rcpt.SizeBytes, len(container))
+		return Receipt{}, fmt.Errorf("%w: deposit receipt size %d does not match the %d bytes sent", ErrRemote, rcpt.SizeBytes, len(container))
 	}
 	if rcpt.CapsuleID == "" {
-		return Receipt{}, errors.New("deposit receipt has no capsule_id")
+		return Receipt{}, fmt.Errorf("%w: deposit receipt has no capsule_id", ErrRemote)
 	}
 	return rcpt, nil
 }
 
-// auditTextLimit bounds any text that reaches the audit log from outside the process.
-const auditTextLimit = 256
+// auditTextLimit bounds any text that reaches the audit log from outside the process. It sits
+// under AuditColumnWidth with room for the "..." marker and a multi-byte rune at the cut.
+const auditTextLimit = 200
+
+// AuditColumnWidth is the widest value the Postgres audit columns accept (VARCHAR(255)).
+// Anything longer makes the insert fail, and a failed insert is a missing audit row.
+const AuditColumnWidth = 255
 
 // AuditSafe makes a string fit for an audit record: printable characters only, cut at
 // auditTextLimit. Remote bodies and operator input go through it before they are stored,

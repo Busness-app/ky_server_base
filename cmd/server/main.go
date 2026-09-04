@@ -148,13 +148,13 @@ func depositLoop(ctx context.Context, cfg *config.Config, st store.Store) {
 		if errors.Is(err, backup.ErrNotPaired) {
 			continue
 		}
+		action, resource, details := backup.Outcome(rcpt, m, err)
+		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: action, Resource: resource, Details: details})
 		if err != nil {
-			log.Printf("[BACKUP] scheduled deposit failed: %v", err)
-			_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: "backup.deposit_failed", Resource: m.CapsuleID, Details: backup.AuditSafe(err.Error())})
+			log.Printf("[BACKUP] scheduled deposit: %s", backup.AuditSafe(err.Error()))
 			continue
 		}
 		log.Printf("[BACKUP] deposited capsule %s (%d bytes) with KyRecovery", rcpt.CapsuleID, rcpt.SizeBytes)
-		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: "backup.deposited", Resource: rcpt.CapsuleID, Details: "digest=" + rcpt.Digest})
 	}
 }
 
@@ -172,11 +172,11 @@ func runDeposit() {
 	defer st.Close()
 
 	rcpt, m, err := backup.DepositBackup(ctx, cfg, st.Settings(), backup.NewKyRecoveryClient(), appVersion)
+	action, resource, details := backup.Outcome(rcpt, m, err)
+	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: action, Resource: resource, Details: details})
 	if err != nil {
-		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: "backup.deposit_failed", Resource: m.CapsuleID, Details: backup.AuditSafe(err.Error())})
 		log.Fatalf("Deposit: %v", err)
 	}
-	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: "backup.deposited", Resource: rcpt.CapsuleID, Details: "digest=" + rcpt.Digest})
 	log.Printf("✓ Capsule %s (%d bytes, sealed to recovery key %s) deposited at %s; digest %s",
 		rcpt.CapsuleID, rcpt.SizeBytes, m.RecoveryKeyID, rcpt.DepositedAt.Format(time.RFC3339), rcpt.Digest)
 }

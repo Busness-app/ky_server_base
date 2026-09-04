@@ -18,6 +18,10 @@ const (
 	settingLastDeposit   = "kyrecovery_last_deposit"
 )
 
+// ErrReceiptUnrecorded means KyRecovery holds the capsule but this instance failed to write
+// the receipt. The deposit happened; the caller must say so rather than report a refusal.
+var ErrReceiptUnrecorded = errors.New("backup: deposit succeeded but the receipt was not recorded")
+
 // ErrDepositInProgress answers a second deposit started while one is still uploading.
 var ErrDepositInProgress = errors.New("backup: a deposit is already in progress")
 
@@ -96,13 +100,27 @@ func DepositBackup(ctx context.Context, cfg *config.Config, settings store.Setti
 		return Receipt{}, m, err
 	}
 	if rcpt.CapsuleID != m.CapsuleID {
-		return Receipt{}, m, fmt.Errorf("deposit receipt names capsule %s, sent %s", rcpt.CapsuleID, m.CapsuleID)
+		return Receipt{}, m, fmt.Errorf("%w: deposit receipt names capsule %s, sent %s", ErrRemote, rcpt.CapsuleID, m.CapsuleID)
 	}
 	b, _ := json.Marshal(rcpt)
 	if err := settings.SetSetting(ctx, settingLastDeposit, string(b)); err != nil {
-		return rcpt, m, fmt.Errorf("deposit %s succeeded but the receipt was not recorded: %w", rcpt.CapsuleID, err)
+		return rcpt, m, fmt.Errorf("%w: %s: %w", ErrReceiptUnrecorded, rcpt.CapsuleID, err)
 	}
 	return rcpt, m, nil
+}
+
+// Outcome classifies a DepositBackup result for the audit log, so every caller records the
+// same event for the same result. A capsule KyRecovery holds is "deposited" even when this
+// side failed to write the receipt; the cause rides in the details.
+func Outcome(rcpt Receipt, m capsule.Manifest, err error) (action, resource, details string) {
+	switch {
+	case err == nil:
+		return "backup.deposited", rcpt.CapsuleID, "digest=" + rcpt.Digest
+	case errors.Is(err, ErrReceiptUnrecorded):
+		return "backup.deposited", rcpt.CapsuleID, AuditSafe("digest=" + rcpt.Digest + " receipt_unrecorded: " + err.Error())
+	default:
+		return "backup.deposit_failed", m.CapsuleID, AuditSafe(err.Error())
+	}
 }
 
 // LastDeposit is the most recent receipt, or ok=false when nothing has been deposited.

@@ -96,6 +96,10 @@ type CaptchaConfig struct {
 	DifficultyPoW int    `json:"difficulty_pow"`
 }
 
+// MinDepositInterval is the shortest schedule accepted: each run snapshots the whole database
+// and uploads it, and KyRecovery admits 60 deposits per token per 15 minutes.
+const MinDepositInterval = 15 * time.Minute
+
 // DefaultAppName is the service name an unconfigured instance runs under. Capsules are sealed
 // under it, so the restore CLI has to agree with it without loading a whole Config.
 const DefaultAppName = "Busnes.app"
@@ -139,6 +143,9 @@ func LoadFromEnv() (*Config, error) {
 	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
 	if err != nil {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %w", err)
+	}
+	if depositInterval != 0 && depositInterval < MinDepositInterval {
+		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", depositInterval, MinDepositInterval)
 	}
 
 	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
