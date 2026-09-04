@@ -8,12 +8,11 @@ import (
 	"github.com/Busness-app/ky-primitives/capsule"
 )
 
-// MaxCapsuleFileBytes and MaxCapsuleTotalBytes mirror the caps capsule enforces on a payload
-// (ky-primitives v0.4.0, capsule/extract.go). The library does not export them, so callers
-// that want to name the limit in an operator-facing message read them here.
+// MaxCapsuleFileBytes and MaxCapsuleTotalBytes are the caps capsule enforces on a payload,
+// named here so an operator-facing message and the library can never disagree.
 const (
-	MaxCapsuleFileBytes  = int64(64 << 20)
-	MaxCapsuleTotalBytes = int64(256 << 20)
+	MaxCapsuleFileBytes  = capsule.MaxFileBytes
+	MaxCapsuleTotalBytes = capsule.MaxExpandedBytes
 )
 
 // TooLargeMessage is what an operator is told when a backup outgrows a capsule.
