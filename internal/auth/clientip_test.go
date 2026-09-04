@@ -83,6 +83,33 @@ func TestClientIP(t *testing.T) {
 			trusted: "192.0.2.7", peer: "192.0.2.8:41000", xff: "198.51.100.9",
 			want: "192.0.2.8",
 		},
+		{
+			// Azure App Service / Application Gateway append "ip:port", not a bare IP.
+			name:    "an IPv4 entry with a port is still read as a client address",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "1.2.3.4:56789",
+			want: "1.2.3.4",
+		},
+		{
+			name:    "a bracketed IPv6 entry with a port is still read as a client address",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "[2001:db8::1]:443",
+			want: "2001:db8::1",
+		},
+		{
+			name:    "a trusted hop written with a port is still recognised as trusted",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "198.51.100.9, 192.0.2.8:41000",
+			want: "198.51.100.9",
+		},
+		{
+			name:    "garbage with a colon still falls back to the peer",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "not-an-ip:not-a-port",
+			want: "192.0.2.7",
+		},
+		{
+			// net.SplitHostPort accepts a non-numeric port; it only requires a host:port shape.
+			name:    "a non-numeric port after a valid IP still yields the IP",
+			trusted: "192.0.2.0/24", peer: "192.0.2.7:41000", xff: "1.2.3.4:abc",
+			want: "1.2.3.4",
+		},
 	}
 
 	for _, tc := range tests {
@@ -110,16 +137,16 @@ func TestClientIP(t *testing.T) {
 }
 
 func TestParseTrustedProxiesRejectsGarbage(t *testing.T) {
-	for _, raw := range []string{"nonsense", "192.0.2.0/33", "192.0.2.1, oops", "192.0.2.0/"} {
+	for _, raw := range []string{"nonsense", "192.0.2.0/33", "192.0.2.1, oops", "192.0.2.0/", "0.0.0.0/0", "::/0", "::ffff:0.0.0.0/96"} {
 		if _, err := config.ParseTrustedProxies(raw); err == nil {
 			t.Errorf("ParseTrustedProxies(%q) accepted an invalid entry", raw)
 		}
 	}
-	got, err := config.ParseTrustedProxies("  192.0.2.1 , 10.0.0.0/8 ,")
+	got, err := config.ParseTrustedProxies("  192.0.2.1 , 10.0.0.0/8 , 10.0.0.1/32")
 	if err != nil {
 		t.Fatalf("valid list rejected: %v", err)
 	}
-	if len(got) != 2 || got[0].String() != "192.0.2.1/32" || got[1].String() != "10.0.0.0/8" {
-		t.Errorf("parsed %v, want [192.0.2.1/32 10.0.0.0/8]", got)
+	if len(got) != 3 || got[0].String() != "192.0.2.1/32" || got[1].String() != "10.0.0.0/8" || got[2].String() != "10.0.0.1/32" {
+		t.Errorf("parsed %v, want [192.0.2.1/32 10.0.0.0/8 10.0.0.1/32]", got)
 	}
 }
