@@ -242,6 +242,9 @@ func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid CIDR %q: %w", field, err)
 			}
+			if prefix.Bits() == 0 {
+				return nil, fmt.Errorf("trusted proxy %q trusts every address; list the proxy's own address or subnet instead", field)
+			}
 			out = append(out, unmapPrefix(prefix).Masked())
 			continue
 		}

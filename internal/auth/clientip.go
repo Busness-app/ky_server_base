@@ -35,16 +35,34 @@ func ClientIP(r *http.Request, trusted []netip.Prefix) string {
 	// reading only the first would hand the walk straight back to the caller.
 	parts := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
 	for i := len(parts) - 1; i >= 0; i-- {
-		addr, err := netip.ParseAddr(strings.TrimSpace(parts[i]))
+		addr, err := parseForwardedEntry(strings.TrimSpace(parts[i]))
 		if err != nil {
 			return peer
 		}
-		addr = addr.Unmap()
 		if !isTrusted(addr, trusted) {
 			return addr.String()
 		}
 	}
 	return peer
+}
+
+// parseForwardedEntry reads one X-Forwarded-For entry as a client address. Most proxies
+// append a bare IP, but Azure App Service and Application Gateway append "ip:port" (or
+// "[ipv6]:port"); without stripping the port, every client behind them collapses onto one
+// unparsable entry and the walk falls back to the proxy's own address.
+func parseForwardedEntry(entry string) (netip.Addr, error) {
+	if addr, err := netip.ParseAddr(entry); err == nil {
+		return addr.Unmap(), nil
+	}
+	host, _, err := net.SplitHostPort(entry)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return addr.Unmap(), nil
 }
 
 // peerIP is the transport peer: the host half of RemoteAddr, normalised so an IPv4-mapped
