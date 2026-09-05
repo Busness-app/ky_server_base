@@ -206,7 +206,7 @@ func LoadFromEnv() (*Config, error) {
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
 		},
 		Backup: BackupConfig{
-			Dir:                  getEnv("KY_BACKUP_DIR", "./backups"),
+			Dir:                  getEnv("KY_BACKUP_DIR", ""),
 			Keep:                 backupKeep,
 			DepositInterval:      depositInterval,
 			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),

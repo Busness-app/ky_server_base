@@ -25,6 +25,9 @@ func TestConfigLoadDefaults(t *testing.T) {
 	if cfg.Captcha.Provider != "pow" {
 		t.Errorf("expected default captcha provider pow, got %s", cfg.Captcha.Provider)
 	}
+	if cfg.Backup.Dir != "" {
+		t.Errorf("expected empty default backup dir (sealed local copies off), got %q", cfg.Backup.Dir)
+	}
 }
 
 func TestConfigLoadFromEnvOverrides(t *testing.T) {
