@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -112,12 +111,11 @@ func (s *Server) handleBackupDrill(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "Failed to collect backup files")
 		return
 	}
-	root := backup.DrillRoot(s.config)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to prepare the drill scratch directory")
+	result, err := backup.RunDrill(ctx, s.config, payload)
+	if errors.Is(err, backup.ErrDrillBusy) {
+		s.writeError(w, http.StatusConflict, "A restore drill is already running")
 		return
 	}
-	result, err := recoveryclient.Drill(ctx, root, payload, backup.Checks(s.config, payload))
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to execute restore drill")
 		return

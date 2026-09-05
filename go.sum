@@ -1,5 +1,5 @@
-github.com/Busness-app/ky-primitives v0.5.0 h1:plL9oCnvAYIqMSQlefeEXBaG8PupgAuYOpkRW6iUpi0=
-github.com/Busness-app/ky-primitives v0.5.0/go.mod h1:cNU4XVPbGf9Dxx8WCB6gDNJj8NdQZI5c6Lr2V8Hp09M=
+github.com/Busness-app/ky-primitives v0.5.1 h1:RZHdfCQjVilCJ8FgJcSCyLap6cQ8oJWmJYoLivgbZRc=
+github.com/Busness-app/ky-primitives v0.5.1/go.mod h1:cNU4XVPbGf9Dxx8WCB6gDNJj8NdQZI5c6Lr2V8Hp09M=
 github.com/coreos/go-oidc/v3 v3.20.0 h1:EtE0WIBHk03N+DqGkY4+UONzzZHk7amKt6IyNd7OsZE=
 github.com/coreos/go-oidc/v3 v3.20.0/go.mod h1:DYCf24+ncYi+XkIH97GY1+dqoRlbaSI26KVTCI9SrY4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

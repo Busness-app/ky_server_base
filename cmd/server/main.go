@@ -282,11 +282,7 @@ func runBackupDrill(args []string) {
 	defer st.Close()
 
 	payload := collectFiles(ctx, cfg)
-	root := backup.DrillRoot(cfg)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		log.Fatalf("Drill scratch directory: %v", err)
-	}
-	result, err := recoveryclient.Drill(ctx, root, payload, backup.Checks(cfg, payload))
+	result, err := backup.RunDrill(ctx, cfg, payload)
 	if err != nil {
 		log.Fatalf("Drill execution error: %v", err)
 	}

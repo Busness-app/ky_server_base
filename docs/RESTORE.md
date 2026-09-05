@@ -243,3 +243,11 @@ server, because sessions are database rows and the capsule brought them back.
 Run Steps 1 and 2 against the latest capsule on a scratch machine once a quarter, with the
 real custodians and their real cards, and then delete the output. The in-app drill proves the
 capsule format restores; only this proves the cards do.
+
+The in-app drill and `backup-drill` CLI validate the recipe from the capsule actually opened,
+including required files, read-only SQLite integrity and environment-variable presence.
+A malformed recipe fails the drill. Concurrent drills on one data directory are refused
+(HTTP 409 or a CLI error); retry after the active drill finishes. The OS releases the lock
+if the process exits. Keep `data/drill.lock` in place; it holds no secret and must not be
+removed to bypass a running drill. Opened scratch data stays under `data/drill` with 0700
+permissions and is removed when the drill returns.

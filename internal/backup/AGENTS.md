@@ -9,7 +9,7 @@ checks (`Checks`).
 
 ## Ownership
 Owns the settings adapter (`settings.go`), payload collection (`payload.go`), and restore-drill
-checks (`drill.go`). It holds no private key, no share, and no pairing state of its own — those
+checks (`drill.go`) and serialized drill entry point (`run_drill.go`). It holds no private key, no share, and no pairing state of its own — those
 live in `recoveryclient` and in the settings rows it reads and writes through the adapter.
 
 ## Local Contracts
@@ -24,11 +24,17 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   never sealed. It also carries the encryption key (`data/encryption.key`, required — restores
   a database whose MFA secrets are gone otherwise) and the pinned recovery public key
   (`data/recovery.pub`, only when paired).
-- `Checks` sees only the scratch directory the lib opened a drilled capsule into: it asserts
-  every `required_files` member is present and non-empty, every `sqlite_paths` member passes
-  `PRAGMA integrity_check`, and every `expected_env` name is set.
-- `DrillRoot` is under the data directory, never the system temp dir, because the opened
-  payload is the whole instance in the clear.
+- `Checks(dir, opened)` reads the opened capsule's manifest, normalizes JSON lists and
+  fails malformed or incomplete recipes. Required files include all capsule members and
+  the database, settings and encryption key; SQLite integrity and required environment
+  checks cannot be disabled. File checks accept only clean relative manifest members;
+  SQLite opens read-only and missing/empty databases fail.
+- HTTP and CLI call `RunDrill`, which holds an OS advisory lock on `<data dir>/drill.lock`
+  across scratch preparation and the library drill. Contention returns `ErrDrillBusy`;
+  closing the descriptor or process exit releases ownership. Keep the lock file in place.
+  The Unix lock matches the Linux container deployment.
+- `DrillRoot` is under the data directory and forced to 0700; opened payloads stay in the
+  library's private, disposable subdirectories. Drills use throwaway keys, not custodian shares.
 - `Members` names what `Collect` would seal now, for the status route and the screen; keep
   the two in step.
 - Pairing, the write-once key pin, `Run` (one seal, every destination), the schedule, local
@@ -38,7 +44,10 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   nothing else.
 
 ## Verification
-- `go test -v ./internal/backup/...`
+- `go test -v ./internal/backup/...` covers decoded seal/open checks, malformed recipes,
+  subprocess lock contention/exit, scratch cleanup and the synthetic v0.5.0 pairing fixture
+  in `testdata/pairing-v050.json`. The fixture uses a 32-byte 0x01 deployment key and retains
+  no recovery private key.
 
 ## Child DOX Index
 None.

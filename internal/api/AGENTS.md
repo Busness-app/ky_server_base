@@ -14,7 +14,7 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 
 | Method | Path | Handler | Response |
 |---|---|---|---|
-| POST | `/api/backup/drill` | `handleBackupDrill` | `recoveryclient.DrillResult` |
+| POST | `/api/backup/drill` | `handleBackupDrill` | `recoveryclient.DrillResult`; 409 when another HTTP/CLI drill holds the data-directory lock |
 | POST | `/api/backup/export-capsule` | `handleExportCapsule` | `.kycap` attachment; POST so the CSRF check covers it |
 | POST | `/api/backup/pair-remote` | `handlePairRemoteRecovery` | `{recovery_key_id, threshold, total_shares}` |
 | POST | `/api/backup/deposit` | `handleRunBackup` | `recoveryclient.Result` (+`receipt_unrecorded`) |
