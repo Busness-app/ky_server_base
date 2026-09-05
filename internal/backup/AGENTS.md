@@ -1,27 +1,34 @@
 # Backup
 
 ## Purpose
-Implements "Feature 0" disaster recovery: `kycap/3` container encapsulation (`.kycap`) from `github.com/Busness-app/ky-primitives/capsule`, sealed to the suite recovery public key received at pairing, deposit of the sealed container to KyRecovery, automated sandboxed restore drills, and KyRecovery pairing.
+Adapts the scaffold to `github.com/Busness-app/ky-primitives/recoveryclient`, which owns the
+KyRecovery pairing, sealing, deposit, restore and drill contract. This package supplies only
+what differs per product: a `Settings` adapter over `store.SettingsStore`, a `Sealer` under the
+deployment key, the payload the scaffold seals (`Collect`), and the drill's verification
+checks (`Checks`).
 
 ## Ownership
-Owns backup payload collection, the KyRecovery client (claim and deposit), loading and pinning the suite recovery public key (`recovery.pub`, key ID pinned in `server_settings`), the pairing record (`kyrecovery_url`, sealed `kyrecovery_token_enc`), the last deposit receipt (`kyrecovery_last_deposit`), sandboxed restore drill verification against a throwaway key, and exposing the sealed capsule for download. It holds no private key and no shares.
+Owns the settings adapter (`settings.go`), payload collection (`payload.go`), and restore-drill
+checks (`drill.go`). It holds no private key, no share, and no pairing state of its own — those
+live in `recoveryclient` and in the settings rows it reads and writes through the adapter.
 
 ## Local Contracts
-- `ClaimPairing` sends `service_name` explicitly and it must be the value `Seal` is given (`cfg.Server.AppName`): KyRecovery pins the claimed name and refuses every deposit whose manifest names another.
-- `StoreRecoveryKey` is write-once per key; `StorePairing` runs after it and seals the token under `crypto.DeriveKey(EncryptionKey, "ky_server_base:setting:kyrecovery_token")`. `LoadPairing` reports `ErrNotPaired` unless key, URL and token are all present, and `ErrKeyPinMissing` — not `ErrNotPaired` — when a pairing record exists but `recovery.pub` is gone or disagrees with the pin; the scheduler skips only a never-paired instance and audits everything else.
-- `Deposit` sends the container as `application/octet-stream` with the bearer token, accepts 200 or 201, and refuses a receipt whose digest, size or capsule ID do not describe the bytes sent. The upload budget is 15 minutes, matching KyRecovery's read deadline.
-- `BuildLocalPayload` snapshots SQLite with `VACUUM INTO` (the store runs in WAL mode; a plain file read misses uncheckpointed commits) and returns `ErrNoDatabaseSnapshot` for any other driver, so a capsule without a consistent database is never sealed or deposited as a backup.
-- Deposits are single-flight per process (`ErrDepositInProgress`), across the scheduler, the admin route and the CLI.
-- Text from outside the process (remote error bodies, operator-typed URLs) goes through `AuditSafe` before it reaches an error string or an audit record: printable only, 200 characters, so a row always fits the 255-byte Postgres audit columns.
-- Errors from the wire or the store wrap `ErrRemote`; a deposit that landed but whose receipt write failed wraps `ErrReceiptUnrecorded` and still returns the receipt. `Outcome` turns any `DepositBackup` result into the audit action, resource and details, and every caller (route, scheduler, CLI) records through it.
-- `DepositBackup` records the receipt only after KyRecovery confirmed the digest; a refused deposit leaves the previous receipt in place. The receipt is what a restore compares `CapsuleID` and `CreatedAt` against.
-- Sandboxed restore drills must execute inside ephemeral temporary directories with POSIX `0700` permissions and be wiped upon completion.
-- Capsules are sealed only to the pinned suite recovery public key; a mismatch between the stored key and the pinned key ID is refused.
-- `BuildLocalPayload` carries no key material; only `AppendSealedOnlyFiles` (via `CollectSealable`) adds the encryption key and `recovery.pub`, and its output leaves the process only inside a sealed capsule.
-- KyRecovery connections require HTTPS, reject private, loopback, link-local and reserved destinations (including carrier-grade NAT, so every Tailscale address), refuse a query string or fragment on the recovery URL (the API path is appended to it), and follow no redirects.
-- No server code opens a capsule sealed to the suite key. `TestNothingInTheServerDecrypts` pins that `recoverykey.Combine` and `FromSeed` are called only inside the `restore` function (`cmd/server/main.go`), and `capsule.Open` only there and inside `RunRestoreDrill` (`internal/backup/drill.go`), which opens a capsule sealed to a throwaway key it generates and discards in the same call.
-- `GET /api/settings`'s `extra_settings` never carries `kyrecovery_token_enc` or a legacy plaintext `kyrecovery_token`; an admin sees the paired `kyrecovery_url`, never the credential.
-- Restore drills seal to a throwaway key generated and discarded within the same call, and report only checks they actually execute.
+- `Settings` maps `store.ErrNotFound` to `recoveryclient.ErrNotFound`; every other error passes
+  through unchanged.
+- `NewSealer` seals the KyRecovery token under the deployment key with label
+  `ky_server_base:setting:kyrecovery_token`, domain-separated so a row copied from another
+  setting will not open.
+- `Collect` snapshots SQLite with the lib's `SQLiteSnapshot` (`VACUUM INTO`; the store runs in
+  WAL mode, so a plain file read misses uncheckpointed commits) and returns
+  `ErrNoDatabaseSnapshot` for any other driver, so a capsule without a consistent database is
+  never sealed. It also carries the encryption key (`data/encryption.key`, required — restores
+  a database whose MFA secrets are gone otherwise) and the pinned recovery public key
+  (`data/recovery.pub`, only when paired).
+- `Checks` sees only the scratch directory the lib opened a drilled capsule into: it asserts
+  every `required_files` member is present and non-empty, every `sqlite_paths` member passes
+  `PRAGMA integrity_check`, and every `expected_env` name is set.
+- `DrillRoot` is under the data directory, never the system temp dir, because the opened
+  payload is the whole instance in the clear.
 
 ## Verification
 - `go test -v ./internal/backup/...`
