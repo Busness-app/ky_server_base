@@ -105,6 +105,15 @@ func snapshotSQLite(ctx context.Context, dsn, dataDir string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// Members names what a capsule carries, for the screen; it is what Collect would seal now.
+func Members(cfg *config.Config) []string {
+	m := []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath}
+	if _, err := os.Stat(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
+		m = append(m, recoveryPubPath)
+	}
+	return m
+}
+
 func requiredFiles(files []recoveryclient.File) []string {
 	req := make([]string, 0, len(files))
 	for _, f := range files {
