@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -11,14 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/password"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky_server_base/internal/api"
 	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
@@ -62,7 +58,7 @@ func runServer() {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 	if cfg.Backup.AllowPrivateRecovery {
-		log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: private and CGNAT KyRecovery destinations admitted (HTTPS still required)")
+		log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: RFC1918 and CGNAT destinations admitted; loopback, link-local and other reserved addresses remain refused (HTTPS still required)")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -100,9 +96,7 @@ func runServer() {
 	}
 
 	srv := api.NewServer(cfg, st)
-	if cfg.Backup.DepositInterval > 0 {
-		go depositLoop(ctx, cfg, st)
-	}
+	go backupLoop(ctx, cfg, st)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	httpServer := &http.Server{
@@ -135,11 +129,23 @@ func runServer() {
 	log.Println("[KY-BASE] Server stopped")
 }
 
-// depositLoop seals and deposits a capsule every DepositInterval while the instance is paired.
-// Unpaired instances stay quiet; every attempt after pairing is audited under the system user.
-func depositLoop(ctx context.Context, cfg *config.Config, st store.Store) {
-	client := backup.NewKyRecoveryClient()
-	ticker := time.NewTicker(cfg.Backup.DepositInterval)
+// runBackup seals one capsule and delivers it to every configured destination.
+func runBackup(ctx context.Context, cfg *config.Config, st store.Store) (recoveryclient.Result, error) {
+	rc, err := backup.RunConfig(cfg, appVersion)
+	if err != nil {
+		return recoveryclient.Result{}, err
+	}
+	client := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
+	return recoveryclient.Run(ctx, rc, backup.Settings(ctx, st.Settings()),
+		func() (recoveryclient.Payload, error) { return backup.Collect(ctx, cfg, appVersion) }, client)
+}
+
+// backupLoop polls the admin's schedule once a minute; a change in the UI needs no restart
+// and a restart never loses its place, the last attempt is in the database. The wait honours
+// shutdown; the run does not, so SIGTERM cannot land between KyRecovery storing a capsule
+// and the receipt being written.
+func backupLoop(ctx context.Context, cfg *config.Config, st store.Store) {
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -147,21 +153,37 @@ func depositLoop(ctx context.Context, cfg *config.Config, st store.Store) {
 			return
 		case <-ticker.C:
 		}
-		rcpt, m, err := backup.DepositBackup(ctx, cfg, st.Settings(), client, appVersion)
-		if errors.Is(err, backup.ErrNotPaired) {
-			continue
-		}
-		action, resource, details := backup.Outcome(rcpt, m, err)
-		_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "system", Action: action, Resource: resource, Details: details})
+		next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
 		if err != nil {
-			log.Printf("[BACKUP] scheduled deposit: %s", backup.AuditSafe(err.Error()))
+			log.Printf("[BACKUP] schedule unreadable: %s", recoveryclient.AuditSafe(err.Error()))
 			continue
 		}
-		log.Printf("[BACKUP] deposited capsule %s (%d bytes) with KyRecovery", rcpt.CapsuleID, rcpt.SizeBytes)
+		if !on || time.Now().Before(next) {
+			continue
+		}
+		runCtx := context.WithoutCancel(ctx)
+		res, err := runBackup(runCtx, cfg, st)
+		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrNoDestination) {
+			continue
+		}
+		recordRun(runCtx, st, "system", res, err)
 	}
 }
 
-// runDeposit seals and deposits one capsule now, for cron or an operator at a shell.
+// recordRun audits one run the same way the admin route does, under the actor that started it.
+func recordRun(ctx context.Context, st store.Store, actor string, res recoveryclient.Result, err error) {
+	action, outcome, details := recoveryclient.Outcome(res, err)
+	details["outcome"] = outcome
+	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
+		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)})
+	if err != nil {
+		log.Printf("[BACKUP] %s: %s", actor, recoveryclient.AuditSafe(err.Error()))
+		return
+	}
+	log.Printf("[BACKUP] %s: capsule %s (%d bytes) local=%q deposited=%t", actor, res.Manifest.CapsuleID, res.SizeBytes, res.LocalPath, res.Receipt != nil)
+}
+
+// runDeposit seals and delivers one capsule now, for cron or an operator at a shell.
 func runDeposit() {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -174,14 +196,14 @@ func runDeposit() {
 	}
 	defer st.Close()
 
-	rcpt, m, err := backup.DepositBackup(ctx, cfg, st.Settings(), backup.NewKyRecoveryClient(), appVersion)
-	action, resource, details := backup.Outcome(rcpt, m, err)
-	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "cli", Action: action, Resource: resource, Details: details})
+	res, err := runBackup(ctx, cfg, st)
+	recordRun(ctx, st, "cli", res, err)
 	if err != nil {
-		log.Fatalf("Deposit: %v", err)
+		log.Fatalf("Backup: %v", err)
 	}
-	log.Printf("✓ Capsule %s (%d bytes, sealed to recovery key %s) deposited at %s; digest %s",
-		rcpt.CapsuleID, rcpt.SizeBytes, m.RecoveryKeyID, rcpt.DepositedAt.Format(time.RFC3339), rcpt.Digest)
+	if res.Receipt != nil {
+		log.Printf("✓ Capsule %s deposited at %s; digest %s", res.Manifest.CapsuleID, res.Receipt.DepositedAt.Format(time.RFC3339), res.Receipt.Digest)
+	}
 }
 
 func runInitAdmin(args []string) {
@@ -238,13 +260,9 @@ func runInitAdmin(args []string) {
 	log.Printf("✓ Admin user %q created successfully", *username)
 }
 
-func loadRecoveryKey(ctx context.Context, cfg *config.Config, st store.Store) (backup.RecoveryKey, error) {
-	return backup.LoadRecoveryKey(ctx, cfg.Database.DataDir, st.Settings())
-}
-
 // collectFiles is what every CLI seal uses; the sealed-only members are safe here and nowhere else.
-func collectFiles(cfg *config.Config) *backup.Payload {
-	payload, err := backup.CollectSealable(cfg, appVersion)
+func collectFiles(ctx context.Context, cfg *config.Config) recoveryclient.Payload {
+	payload, err := backup.Collect(ctx, cfg, appVersion)
 	if err != nil {
 		log.Fatalf("Failed to collect backup files: %v", err)
 	}
@@ -263,19 +281,19 @@ func runBackupDrill(args []string) {
 	}
 	defer st.Close()
 
-	payload := collectFiles(cfg)
-	pinned, err := loadRecoveryKey(ctx, cfg, st)
-	if err != nil && !errors.Is(err, backup.ErrNotPaired) {
-		log.Fatalf("Recovery key: %v", err)
+	payload := collectFiles(ctx, cfg)
+	root := backup.DrillRoot(cfg)
+	if err := os.MkdirAll(root, 0700); err != nil {
+		log.Fatalf("Drill scratch directory: %v", err)
 	}
-	result, err := backup.RunRestoreDrill(ctx, payload.ServiceName, payload.AppVersion, payload.Files, payload.Dependencies, payload.VerificationRecipe, pinned)
+	result, err := recoveryclient.Drill(ctx, root, payload, backup.Checks(cfg, payload))
 	if err != nil {
 		log.Fatalf("Drill execution error: %v", err)
 	}
 
 	fmt.Printf("\n=== Feature 0: KyBackup Restore Drill Summary ===\n")
 	fmt.Printf("Status:   %s\n", map[bool]string{true: "PASSED (OK)", false: "FAILED"}[result.Passed])
-	fmt.Printf("Duration: %d ms\n", result.DurationMS)
+	fmt.Printf("Duration: %d ms\n", result.DurationMs)
 	for _, check := range result.Checks {
 		status := "✓"
 		if !check.Passed {
@@ -302,18 +320,17 @@ func runExportCapsule(args []string) {
 	}
 	defer st.Close()
 
-	key, err := loadRecoveryKey(ctx, cfg, st)
+	key, err := recoveryclient.LoadRecoveryKey(cfg.Database.DataDir, backup.Settings(ctx, st.Settings()))
 	if err != nil {
 		log.Fatalf("Recovery key: %v", err)
 	}
-	payload := collectFiles(cfg)
-	raw, m, err := backup.Seal(payload.ServiceName, payload.AppVersion, payload.Files, payload.Dependencies, payload.VerificationRecipe, key)
+	raw, m, err := recoveryclient.Seal(collectFiles(ctx, cfg), key)
 	if err != nil {
 		log.Fatalf("Seal: %v", err)
 	}
 	path := *out
 	if path == "" {
-		path = backup.FilenameSafe(m.CapsuleID) + ".kycap"
+		path = recoveryclient.FilenameSafe(m.CapsuleID) + ".kycap"
 	}
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		log.Fatalf("Write: %v", err)
@@ -321,59 +338,11 @@ func runExportCapsule(args []string) {
 	log.Printf("✓ Capsule %s sealed to recovery key %s, written to %s (%d bytes)", m.CapsuleID, m.RecoveryKeyID, path, len(raw))
 }
 
-// restore is the product-side half of the ceremony: k custodian shares typed from their cards,
-// combined here, used once, and dropped. It refuses a capsule from another service before
-// touching the key, and prints the authenticated manifest so the operator can compare
-// CapsuleID and CreatedAt against kyrecovery's deposit record — Open proves integrity and
-// binding to this key, not which backup this is.
-func restore(capsulePath, targetDir, expectService string, shareStrings []string, stdout io.Writer) error {
-	raw, err := os.ReadFile(capsulePath)
-	if err != nil {
-		return err
-	}
-	peek, err := capsule.ReadUnverifiedManifest(raw)
-	if err != nil {
-		return err
-	}
-	if peek.ServiceName != expectService {
-		return fmt.Errorf("capsule is for service %q, this instance is %q; pass -service to override", peek.ServiceName, expectService)
-	}
-
-	shares := make([]shamir.Share, 0, len(shareStrings))
-	for i, s := range shareStrings {
-		sh, err := shamir.ParseShare(s)
-		if err != nil {
-			return fmt.Errorf("share %d: %w", i+1, err)
-		}
-		shares = append(shares, sh)
-	}
-	priv, err := recoverykey.Combine(shares)
-	if err != nil {
-		return err
-	}
-
-	m, files, err := capsule.Open(raw, priv, targetDir)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "Restored %d files from capsule %s\n  service:      %s (v%s)\n  created:      %s\n  recovery key: %s\n  payload hash: %s\n",
-		len(files), m.CapsuleID, m.ServiceName, m.AppVersion, m.CreatedAt.Format(time.RFC3339), m.RecoveryKeyID, m.PayloadHash)
-	return nil
-}
-
-// readShares takes custodian shares off a reader, one per non-empty line. They never travel
-// in argv: /proc/<pid>/cmdline is world-readable, argv is kept in shell history and copied by
-// every process monitor, and k of these lines rebuild the suite private key.
-func readShares(r io.Reader) ([]string, error) {
-	var shares []string
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	for sc.Scan() {
-		if line := strings.TrimSpace(sc.Text()); line != "" {
-			shares = append(shares, line)
-		}
-	}
-	return shares, sc.Err()
+// restore is the product-side half of the ceremony, owned by the lib: k custodian shares
+// combined, used once, dropped; a capsule from another service refused before the key is
+// touched; the authenticated manifest printed for comparison with KyRecovery's record.
+func restore(capsulePath, targetDir, expectService string, shares []string, stdout io.Writer) error {
+	return recoveryclient.Restore(capsulePath, targetDir, expectService, shares, stdout)
 }
 
 // stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.
@@ -413,7 +382,7 @@ func runRestore(args []string) {
 	if stdinIsTerminal() {
 		fmt.Fprintln(os.Stderr, "Paste custodian shares, one per line, then Ctrl-D:")
 	}
-	shares, err := readShares(os.Stdin)
+	shares, err := recoveryclient.ReadShares(os.Stdin)
 	if err != nil {
 		log.Fatalf("Reading shares: %v", err)
 	}
