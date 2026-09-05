@@ -30,27 +30,42 @@ const errRecoveryKeyMismatch = "Recovery key file does not match the pinned key 
 // upload budget plus room for sealing. The listener's WriteTimeout is sized for JSON replies.
 const depositWriteBudget = 16 * time.Minute
 
-// AuditDetails flattens the lib's details map into the bounded audit column. Outcome goes
-// first so the success/failure discriminator cannot be displaced by a long remote error.
+// AuditDetails flattens the lib's details map into the bounded audit column. Locally
+// derived fields go first so a long remote error cannot displace the useful facts.
 func AuditDetails(m map[string]any) string {
-	keys := make([]string, 0, len(m))
+	seen := map[string]bool{}
+	keys := []string{"outcome", "capsule_id", "local_path", "local_error", "deposited", "digest", "size_bytes"}
+	var extra, remote []string
 	for k := range m {
-		if k != "outcome" {
-			keys = append(keys, k)
+		switch k {
+		case "outcome", "capsule_id", "local_path", "local_error", "deposited", "digest", "size_bytes":
+		case "error", "receipt_unrecorded":
+			remote = append(remote, k)
+		default:
+			extra = append(extra, k)
 		}
 	}
-	sort.Strings(keys)
+	sort.Strings(extra)
+	sort.Strings(remote)
+	keys = append(keys, extra...)
+	keys = append(keys, remote...)
 	var b strings.Builder
-	if outcome, ok := m["outcome"]; ok {
-		fmt.Fprintf(&b, "outcome=%v", outcome)
-	}
 	for _, k := range keys {
+		v, ok := m[k]
+		if !ok || seen[k] {
+			continue
+		}
+		seen[k] = true
 		if b.Len() > 0 {
 			b.WriteByte(' ')
 		}
-		fmt.Fprintf(&b, "%s=%v", k, m[k])
+		fmt.Fprintf(&b, "%s=%s", k, auditValue(v))
 	}
 	return recoveryclient.AuditSafe(b.String())
+}
+
+func auditValue(v any) string {
+	return strings.ReplaceAll(fmt.Sprintf("%q", fmt.Sprint(v)), "=", `\x3d`)
 }
 
 // auditBackup records a backup event against the acting admin. Details never carry the

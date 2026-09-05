@@ -173,7 +173,7 @@ func TestRunWritesLocalCopy0600(t *testing.T) {
 	}
 	var ok bool
 	for _, rec := range auditRows(t, st, "admin.backup_run") {
-		if rec.UserID == "usr_alice" && rec.Resource == res.Manifest.CapsuleID && strings.Contains(rec.Details, "outcome=success") && strings.Contains(rec.Details, "local_path=") {
+		if rec.UserID == "usr_alice" && rec.Resource == res.Manifest.CapsuleID && strings.Contains(rec.Details, `outcome="success"`) && strings.Contains(rec.Details, "local_path=") {
 			ok = true
 		}
 	}
