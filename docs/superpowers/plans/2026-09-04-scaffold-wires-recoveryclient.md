@@ -15,8 +15,8 @@
 - **Blocked until** ky-primitives PR #12 merges and `v0.5.0` is tagged. Do not start a new copy of `internal/backup`.
 - Lib facts that shape this plan: `Drill(ctx, scratchRoot, payload, checks)` refuses an empty scratch root and wants it inside the data directory (`ErrNoScratchRoot`); `WriteLocalCopy` refuses `Keep < 1` (`ErrBadKeep`); `SQLiteSnapshot(ctx, db, destPath)` runs `VACUUM INTO` on a `*sql.DB` and wants a non-existent dest; `guardtest.MinFiles` is 10.
 - **Claim** myslop folder `ky-server-base-sealed-token` before starting; post there when done.
-- Env vars: `KY_BACKUP_DIR` (sealed copies, default empty = off), `KY_BACKUP_KEEP` (default 7), `KY_BACKUP_DEPOSIT_INTERVAL` (default `24h`, default only), `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` (default false), `KY_DNS` (compose override only).
-- Routes keep the scaffold's prefix `/api/backup/...` (no `/admin`); register with Go 1.22 method patterns so `export-capsule` stops accepting any method.
+- Env vars: `KY_BACKUP_DIR` (sealed copies, default empty = off), `KY_BACKUP_KEEP` (default 7), `KY_BACKUP_DEPOSIT_INTERVAL` (default `24h`, default only), `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` (default false; admits RFC1918 and CGNAT only, while loopback, link-local, unspecified, multicast, and all other reserved ranges remain refused), `KY_DNS` (compose override only). Retention may delete only the exact capsule filename prefix this application writes and must leave every foreign or legacy file untouched.
+- Routes keep the scaffold's prefix `/api/backup/...` (no `/admin`); register with Go 1.22 method patterns so only the declared method can reach each handler. The unscoped SPA catch-all may serve a wrong-method request, so tests assert the backup handler did not run rather than assuming a 405.
 - Step-up: the scaffold has none. Spec row 10 says "or the product's equivalent": every backup route is admin-only and listed in `TestPrivilegedEndpointsRequireAdmin`. Say so in `internal/api/AGENTS.md`. (Assumption; flag in the PR.)
 - Sealer label: `ky_server_base:setting:kyrecovery_token` (unchanged from #19). Nothing is in the wild; no migration of stored ciphertext. Delete dev data dirs before the live check.
 - Audit `Details` is a string bounded to 255 bytes (Postgres column). Convert the lib's `details map[string]any` with `auditDetails` (Task 4), never `fmt.Sprint`.
@@ -121,7 +121,7 @@ func (s *settingsStore) DeleteSetting(ctx context.Context, key string) error {
 
 (Same table and `rebind` style as `SetSetting` at `sqlstore.go:797`; check how it reaches the `*sql.DB`.)
 
-`config.go`: replace `BackupConfig` with the four fields above. In `LoadFromEnv`: `Dir: getEnv("KY_BACKUP_DIR", "")`, `Keep: getEnvInt("KY_BACKUP_KEEP", 7)`, `AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false)`; after parsing, `if keep < 1 { return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", keep) }` (the lib refuses `Keep < 1` at write time; fail at startup instead of at the first backup); keep the `DepositInterval` parsing and the `MinDepositInterval` check; delete `StorageDir` and `AutoDrillDay`. Log at startup in `main.go` when `AllowPrivateRecovery` is set: `log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: private and CGNAT KyRecovery destinations admitted (HTTPS still required)")`.
+`config.go`: replace `BackupConfig` with the four fields above. In `LoadFromEnv`: `Dir: getEnv("KY_BACKUP_DIR", "")`, `Keep: getEnvInt("KY_BACKUP_KEEP", 7)`, `AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false)`; after parsing, `if keep < 1 { return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", keep) }` (the lib refuses `Keep < 1` at write time; fail at startup instead of at the first backup); keep the `DepositInterval` parsing and the `MinDepositInterval` check; delete `StorageDir` and `AutoDrillDay`. Log at startup in `main.go` when `AllowPrivateRecovery` is set: `log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: RFC1918 and CGNAT destinations admitted; loopback, link-local and other reserved addresses remain refused (HTTPS still required)")`.
 
 - [ ] **Step 4: Build, test, commit**
 
@@ -310,6 +310,8 @@ Delete `RunRestoreDrill`, `CheckItem`, `DrillResult` (use `recoveryclient.Check`
 git rm internal/backup/client.go internal/backup/client_test.go internal/backup/deposit.go internal/backup/deposit_test.go internal/backup/recoverykey.go internal/backup/recoverykey_test.go internal/backup/capsule.go internal/backup/capsule_test.go internal/backup/export_test.go
 ```
 
+Before this deletion, add adapter-level regression tests for the library client: reject DNS answers in private, loopback, CGNAT and other reserved ranges at dial time when the opt-in is off; continue rejecting loopback and link-local when it is on; refuse HTTP 307/308 instead of following them; and reject non-HTTPS or credentialed URLs. If the selected library version cannot pass, keep a thin transport here and inject it into `NewClient` until the library owns equivalent checks.
+
 Move `setupSQLiteStore` (or whatever `deposit_test.go` calls it) into `settings_test.go` first. The behaviour those deleted tests pinned now lives in the lib's tests.
 
 - [ ] **Step 7: Build the package, commit**
@@ -338,7 +340,7 @@ git commit -m "backup: adapters over ky-primitives/recoveryclient; drop copied c
 | Method | Path | Handler | Response |
 |---|---|---|---|
 | POST | /api/backup/drill | handleBackupDrill | `recoveryclient.DrillResult` |
-| GET | /api/backup/export-capsule | handleExportCapsule | `.kycap` attachment |
+| POST | /api/backup/export-capsule | handleExportCapsule | CSRF-protected `.kycap` attachment |
 | POST | /api/backup/pair-remote | handlePairRemoteRecovery | `{recovery_key_id, threshold, total_shares}` |
 | POST | /api/backup/deposit | handleRunBackup | `recoveryclient.Result` |
 | DELETE | /api/backup/pairing | handleUnpair | `{paired:false}` |
@@ -358,7 +360,8 @@ func TestRunWritesLocalCopy0600(t *testing.T)            // KY_BACKUP_DIR set in
 func TestUnpairKeepsPin(t *testing.T)                    // pair (fake client), DELETE pairing → 200; status key_pinned true, paired false; DELETE again → 412
 func TestScheduleBounds(t *testing.T)                    // 0 ok, 899 → 400, 1<<55 → 400, 900 ok; audit row reads back interval_sec=900
 func TestStatusNeverCarriesToken(t *testing.T)           // body has no kyrecovery_token_enc / token substring
-func TestExportCapsuleRejectsPost(t *testing.T)          // 405
+func TestExportCapsuleRequiresCSRF(t *testing.T)         // session without CSRF is 403 and no snapshot is made
+func TestExportCapsuleOnlyPOST(t *testing.T)             // wrong methods never produce a capsule attachment or export audit row
 ```
 
 Add to `TestPrivilegedEndpointsRequireAdmin` cases: `{"DELETE","/api/backup/pairing"}`, `{"POST","/api/backup/pin-key"}`, `{"PUT","/api/backup/schedule"}`, `{"GET","/api/backup/status"}`.
@@ -394,7 +397,7 @@ func auditDetails(m map[string]any) string {
 
 - `handleBackupDrill`: `payload, err := backup.Collect(ctx, s.config, appVersion)`; `ErrNoDatabaseSnapshot` → 200 with a failed `Check` as today; `recoveryclient.Drill(ctx, backup.DrillRoot(s.config), payload, backup.Checks(s.config, payload))`.
 - `handleExportCapsule`: `LoadRecoveryKey(dataDir, backup.Settings(ctx, st))`; `ErrNotPaired` → 412 "No recovery key; pair or pin one"; `ErrKeyMismatch` → 409; `recoveryclient.Seal(payload, key)`; `capsule.ErrCapsuleTooLarge` → 413 with `recoveryclient.TooLargeMessage`.
-- `handlePairRemoteRecovery`: `recoveryclient.ValidateURL(req.RecoveryURL, s.config.Backup.AllowPrivateRecovery)` first (400 naming `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` when the lib's error says private); `ClaimPairing(ctx, url, code, cfg.Server.AppName, cfg.Server.AppName)`; `StoreRecoveryKey` (`fs.ErrExist` → 409); `StorePairing(settings, sealer, url, token)`; audit `backup.paired` with `details = "recovery_key_id=<id> allow_private=<bool>"`.
+- `handlePairRemoteRecovery`: `recoveryclient.ValidateURL(req.RecoveryURL, s.config.Backup.AllowPrivateRecovery)` first (400 naming `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` when the lib's error says private), with an adapter check if needed so the opt-in admits only RFC1918 and CGNAT and never loopback, link-local, or other reserved ranges; `ClaimPairing(ctx, url, code, cfg.Server.AppName, cfg.Server.AppName)`; `StoreRecoveryKey` (`fs.ErrExist` → 409); `StorePairing(settings, sealer, url, token)`; audit `backup.paired` with `details = "recovery_key_id=<id> allow_private=<bool>"`.
 - `handleRunBackup` (route stays `/api/backup/deposit`): `rc, _ := backup.RunConfig(cfg, appVersion)`; `res, err := recoveryclient.Run(ctx, rc, settings, func() (recoveryclient.Payload, error) { return backup.Collect(ctx, cfg, appVersion) }, s.recovery)`; `action, outcome, details := recoveryclient.Outcome(res, err)`; audit `action` with resource `res.Manifest.CapsuleID` and `auditDetails(details)` plus `outcome`; status mapping: `ErrReceiptUnrecorded` → 200 with `receipt_unrecorded` field; `ErrKeyPinMissing` → 412 "Paired, but recovery.pub is missing or does not match the pin"; `ErrNotPaired` → 412 "No recovery key"; `ErrNoDestination` → 412 "Nowhere to put a capsule: pair with KyRecovery or set KY_BACKUP_DIR"; `ErrInProgress` → 409; `ErrKeyMismatch` → 409; too large → 413; `ErrRemote` → 502; else 500. Every remote error text logged through `AuditSafe`.
 - `handleUnpair`, `handlePinKey`, `handleSetSchedule`, `handleBackupStatus`: copy kysignon's bodies, `h.store` → `backup.Settings(r.Context(), s.store.Settings())`, `h.cfg.DataDir` → `s.config.Database.DataDir`, `backup.X` → `recoveryclient.X`, `h.record(...)` → `s.auditBackup(...)`, `config.MinBackupDepositInterval` → `recoveryclient.MinInterval`, `backup.Interval(h.cfg, h.store)` → `recoveryclient.Interval(s.config.Backup.DepositInterval, settings)`. `PinKey` uses `recoveryclient.ParsePinRequest(req.PublicKey, req.Threshold, req.TotalShares)` (400 on error) then `StoreRecoveryKey`. `Status` fields: `paired, key_pinned, app_name, app_version, recovery_url, recovery_key_id, threshold, total_shares, recovery_key_error, last_deposit, local_dir, local_keep, local_copies, local_error, interval_sec, min_interval_sec, next_run_at, allow_private_recovery`.
 
@@ -402,7 +405,7 @@ func auditDetails(m map[string]any) string {
 
 ```go
 s.mux.HandleFunc("POST /api/backup/drill", s.requireAdmin(s.handleBackupDrill))
-s.mux.HandleFunc("GET /api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
+s.mux.HandleFunc("POST /api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
 s.mux.HandleFunc("POST /api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
 s.mux.HandleFunc("POST /api/backup/deposit", s.requireAdmin(s.handleRunBackup))
 s.mux.HandleFunc("DELETE /api/backup/pairing", s.requireAdmin(s.handleUnpair))
@@ -411,7 +414,7 @@ s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule)
 s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
 ```
 
-Check that `requireAdmin` returns 401/403 before the mux's 405 would apply for the authz test's expectations; with method patterns, an unauthenticated `POST /api/backup/export-capsule` is 405 from the mux, which is fine because the authz test uses the right methods.
+The frontend calls export with `secureFetch`, so POST carries the CSRF header. Because `s.mux.Handle("/", web.Handler())` is an any-method catch-all, a wrong method can reach the SPA instead of producing 405. Pin the security property directly: it must not reach `handleExportCapsule`, return a capsule attachment, or write an export audit row.
 
 - [ ] **Step 4: Run, commit**
 
@@ -625,7 +628,7 @@ Also run each failure mode: one share (error names threshold), `-service wrong` 
 
 - [ ] **Step 3: README.md and AGENTS.md**
 
-`README.md` (new) with a "Disaster recovery" section: what a capsule carries; why TLS matters when the capsule is sealed (the public key arrives at pairing, trust on first use; the token; the receipts); pin by hand or compare fingerprints before trusting a pairing; every env var from Global Constraints with default and meaning; the LAN DNS override command; link to `docs/RESTORE.md`.
+`README.md` (new) with a "Disaster recovery" section: what a capsule carries; why TLS matters when the capsule is sealed (the public key arrives at pairing, trust on first use; the token; the receipts); pin by hand or compare fingerprints before trusting a pairing; every env var from Global Constraints with default and meaning; the LAN DNS override command; link to `docs/RESTORE.md`. Warn upgrading operators to move old plaintext backups out of `KY_BACKUP_DIR`, retain them until migration is verified, and securely remove them afterward; capsule retention deliberately ignores them.
 
 `internal/backup/AGENTS.md`: rewrite Ownership and Local Contracts to say what is now here (Collect, Checks, Settings adapter, Sealer label) and that pairing, pin, run, schedule, local copies, drill mechanics, restore and the guard are `ky-primitives/recoveryclient`, with the contracts the lib README lists. `internal/api/AGENTS.md`: the route table, the "admin-only stands in for step-up" note, `AuditDetails`. Root `AGENTS.md` DOX index: add `docs/RESTORE.md`, `README.md`, drop any mention of `KY_BACKUP_DRILL_DAY` and plaintext local backups.
 
@@ -667,6 +670,6 @@ Pair from the screen against Yoshi's KyRecovery, Back up now, confirm the receip
 ## Self-review notes
 
 - Spec rows: 1 (T2/T3), 2 (T3 pin-key), 3 (T3/T4 Run), 4 (T1 config + lib), 5 (T3 schedule + T4 loop + T5 form), 6 (T3 unpair), 7 (T1 + T3 ValidateURL + startup log), 8 (T6), 9 (T5), 10 (T3 authz test, assumption noted), 11 (T6), 12 (T7), 13 (T7), 14 (already absent from `git ls-files`; confirm in T7).
-- The old plaintext local backup (`BuildLocalPayload` name, `StorageDir`, `AutoDrillDay`, `KY_BACKUP_DRILL_DAY`) is removed in T1/T2/T6/T7; `KY_BACKUP_DIR` keeps its name with a new meaning and an empty default. Say this in the PR: an operator who had `KY_BACKUP_DIR=/app/backups` in compose now gets sealed copies there, not plaintext, which is the point.
+- The old plaintext local backup (`BuildLocalPayload` name, `StorageDir`, `AutoDrillDay`, `KY_BACKUP_DRILL_DAY`) is removed in T1/T2/T6/T7; `KY_BACKUP_DIR` keeps its name with a new meaning and an empty default. Say this in the PR and README: an operator who had `KY_BACKUP_DIR=/app/backups` in compose now gets sealed copies there, while old plaintext files are never pruned automatically and must be moved and securely removed after migration.
 - `settingsAdapter` binds a context per call site; in `backupLoop` the run uses `context.WithoutCancel(ctx)` so the adapter it is handed does too.
 - Updated 2026-09-04 after harrier's posts 204/208/211: package renamed to `recoveryclient`; `Drill` takes a scratch root under the data dir (`DrillRoot`); `SQLiteSnapshot` replaces the hand-rolled `VACUUM INTO`; `Keep` validated at startup because the lib refuses `Keep < 1`.
