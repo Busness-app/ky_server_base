@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"golang.org/x/sys/unix"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -297,5 +298,49 @@ func TestExportCapsuleOnlyPOST(t *testing.T) {
 	w := adminPost(t, srv, session, "/api/backup/export-capsule")
 	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") {
 		t.Fatalf("POST export: got %d %v", w.Code, w.Header())
+	}
+}
+
+func TestDrillReportsBusyAndRunsDecodedChecks(t *testing.T) {
+	t.Setenv("KY_PORT", "8080")
+	t.Setenv("KY_DB_DRIVER", "sqlite")
+	srv, st, cfg := setupSQLiteServer(t)
+	session := loginAs(t, srv, st, "drill-admin", "admin")
+	f, err := os.OpenFile(filepath.Join(cfg.Database.DataDir, "drill.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	w := adminPost(t, srv, session, "/api/backup/drill")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("busy: %d %s", w.Code, w.Body.String())
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w = adminPost(t, srv, session, "/api/backup/drill")
+	if w.Code != http.StatusOK {
+		t.Fatalf("drill: %d %s", w.Code, w.Body.String())
+	}
+	var result recoveryclient.DrillResult
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Passed {
+		t.Fatalf("drill failed: %+v", result)
+	}
+	for _, name := range []string{"Required Files", "SQLite Integrity: data/ky_server.db", "Environment: KY_PORT", "Environment: KY_DB_DRIVER"} {
+		found := false
+		for _, check := range result.Checks {
+			if check.Name == name && check.Passed {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing check %s", name)
+		}
 	}
 }
