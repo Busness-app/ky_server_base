@@ -30,15 +30,20 @@ const errRecoveryKeyMismatch = "Recovery key file does not match the pinned key 
 // upload budget plus room for sealing. The listener's WriteTimeout is sized for JSON replies.
 const depositWriteBudget = 16 * time.Minute
 
-// AuditDetails flattens the lib's details map into the 255-byte audit column, in a stable
-// key order so the same outcome always audits to the same string.
+// AuditDetails flattens the lib's details map into the bounded audit column. Outcome goes
+// first so the success/failure discriminator cannot be displaced by a long remote error.
 func AuditDetails(m map[string]any) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		if k != "outcome" {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
 	var b strings.Builder
+	if outcome, ok := m["outcome"]; ok {
+		fmt.Fprintf(&b, "outcome=%v", outcome)
+	}
 	for _, k := range keys {
 		if b.Len() > 0 {
 			b.WriteByte(' ')
@@ -385,8 +390,8 @@ type ScheduleRequest struct {
 	IntervalSec int64 `json:"interval_sec"`
 }
 
-// handleSetSchedule stores how often the scheduler backs up. Zero turns it off, which is why
-// it sits behind step-up: a quietly disabled schedule is the failure mode that hurts most.
+// handleSetSchedule stores how often the scheduler backs up. Zero turns it off, so the
+// admin-only, CSRF-protected and audited boundary matters.
 func (s *Server) handleSetSchedule(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")

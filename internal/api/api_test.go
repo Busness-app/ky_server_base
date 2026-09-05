@@ -874,6 +874,22 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	}
 }
 
+func TestAuditDetailsAlwaysCarriesTheOutcome(t *testing.T) {
+	got := api.AuditDetails(map[string]any{
+		"capsule_id": "cap-Busnes.app-1788605720094118543",
+		"error":      strings.Repeat("x", 200),
+		"local_path": "/backups/a.kycap",
+		"outcome":    "failure",
+		"size_bytes": 1234,
+	})
+	if !strings.Contains(got, "outcome=failure") {
+		t.Fatalf("AuditDetails lost outcome: %q", got)
+	}
+	if len(got) > 210 {
+		t.Fatalf("AuditDetails length = %d, want bounded: %q", len(got), got)
+	}
+}
+
 // cancellingDepositor cancels the request while the upload is in flight, the way a closed
 // browser tab does, and reports whether its own context survived.
 type cancellingDepositor struct {
