@@ -21,6 +21,7 @@ import (
 
 	"github.com/Busness-app/ky-primitives/keyfile"
 	"github.com/Busness-app/ky-primitives/password"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/ky-primitives/totp"
 	"github.com/Busness-app/ky_server_base/internal/api"
@@ -238,15 +239,15 @@ func TestMFATOTPRefusesReplay(t *testing.T) {
 // fakePairer stands in for KyRecovery: the real client refuses non-HTTPS and private hosts,
 // so there is no way to exercise the pairing handler against a test server.
 type fakePairer struct {
-	result backup.PairingResult
+	result recoveryclient.PairingResult
 }
 
-func (f fakePairer) ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (backup.PairingResult, error) {
+func (f fakePairer) ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (recoveryclient.PairingResult, error) {
 	return f.result, nil
 }
 
-func (f fakePairer) Deposit(context.Context, string, string, []byte) (backup.Receipt, error) {
-	return backup.Receipt{}, errors.New("fakePairer does not deposit")
+func (f fakePairer) Deposit(context.Context, string, string, []byte) (recoveryclient.Receipt, error) {
+	return recoveryclient.Receipt{}, errors.New("fakePairer does not deposit")
 }
 
 func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
@@ -256,9 +257,9 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub := priv.Public()
-	api.SetRecoveryClientForTest(srv, fakePairer{result: backup.PairingResult{
+	api.SetRecoveryClientForTest(srv, fakePairer{result: recoveryclient.PairingResult{
 		APIToken: "tok_pair",
-		Key:      backup.RecoveryKey{Public: pub, Threshold: 2, TotalShares: 3},
+		Key:      recoveryclient.RecoveryKey{Public: pub, Threshold: 2, TotalShares: 3},
 	}})
 
 	// A URL longer than the Postgres audit column: the pairing must still be recorded.
@@ -287,7 +288,7 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 		t.Errorf("recovery_key_id: got %v, want %s", out["recovery_key_id"], pub.ID())
 	}
 
-	got, err := backup.LoadRecoveryKey(context.Background(), cfg.Database.DataDir, st.Settings())
+	got, err := recoveryclient.LoadRecoveryKey(cfg.Database.DataDir, backup.Settings(context.Background(), st.Settings()))
 	if err != nil {
 		t.Fatalf("load pinned key: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 	if paired == nil {
 		t.Fatal("no backup.paired audit row for a long recovery URL")
 	}
-	if len(paired.Resource) > backup.AuditColumnWidth || !strings.HasPrefix(paired.Resource, "https://recovery.busnes.app/") {
+	if len(paired.Resource) > 255 || !strings.HasPrefix(paired.Resource, "https://recovery.busnes.app/") {
 		t.Errorf("resource: %d bytes, %.40q", len(paired.Resource), paired.Resource)
 	}
 	if !strings.Contains(paired.Details, "recovery_key_id="+pub.ID()) {
@@ -316,9 +317,9 @@ func TestPairRemoteStoresTheRecoveryKey(t *testing.T) {
 
 	// Pairing again to a different key must not silently re-point the product.
 	other, _ := recoverykey.Generate()
-	api.SetRecoveryClientForTest(srv, fakePairer{result: backup.PairingResult{
+	api.SetRecoveryClientForTest(srv, fakePairer{result: recoveryclient.PairingResult{
 		APIToken: "tok_pair2",
-		Key:      backup.RecoveryKey{Public: other.Public(), Threshold: 2, TotalShares: 3},
+		Key:      recoveryclient.RecoveryKey{Public: other.Public(), Threshold: 2, TotalShares: 3},
 	}})
 	req2 := httptest.NewRequest("POST", "/api/backup/pair-remote", bytes.NewReader(body))
 	req2.Header.Set("Content-Type", "application/json")
@@ -342,8 +343,8 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(),
-		backup.RecoveryKey{Public: pinned.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+	if err := recoveryclient.StoreRecoveryKey(cfg.Database.DataDir, backup.Settings(ctx, st.Settings()),
+		recoveryclient.RecoveryKey{Public: pinned.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -352,7 +353,7 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := backup.RecoveryKeyPath(cfg.Database.DataDir)
+	path := recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -360,10 +361,7 @@ func TestExportCapsuleRefusesAMismatchedRecoveryKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest("GET", "/api/backup/export-capsule", nil)
-	req.AddCookie(loginAs(t, srv, st, "alice", "admin"))
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := adminPost(t, srv, loginAs(t, srv, st, "alice", "admin"), "/api/backup/export-capsule")
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("export with a swapped recovery.pub: got %d, want 409: %s", w.Code, w.Body.String())
@@ -383,8 +381,8 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(),
-		backup.RecoveryKey{Public: key.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+	if err := recoveryclient.StoreRecoveryKey(cfg.Database.DataDir, backup.Settings(ctx, st.Settings()),
+		recoveryclient.RecoveryKey{Public: key.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -395,17 +393,14 @@ func TestExportCapsuleRejectsAnOversizedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(fmt.Sprintf("CREATE TABLE big(b BLOB); INSERT INTO big VALUES (zeroblob(%d))", backup.MaxCapsuleFileBytes+1)); err != nil {
+	if _, err := db.Exec(fmt.Sprintf("CREATE TABLE big(b BLOB); INSERT INTO big VALUES (zeroblob(%d))", recoveryclient.MaxCapsuleFileBytes+1)); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
 	cfg.Database.Driver = "sqlite"
 	cfg.Database.DSN = big
 
-	req := httptest.NewRequest("GET", "/api/backup/export-capsule", nil)
-	req.AddCookie(loginAs(t, srv, st, "alice", "admin"))
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
+	w := adminPost(t, srv, loginAs(t, srv, st, "alice", "admin"), "/api/backup/export-capsule")
 
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized export: got %d, want 413: %s", w.Code, w.Body.String())
@@ -735,17 +730,17 @@ type fakeDepositor struct {
 	got []byte
 }
 
-func (f *fakeDepositor) Deposit(_ context.Context, _, _ string, container []byte) (backup.Receipt, error) {
+func (f *fakeDepositor) Deposit(_ context.Context, _, _ string, container []byte) (recoveryclient.Receipt, error) {
 	f.got = container
 	if f.err != nil {
-		return backup.Receipt{}, f.err
+		return recoveryclient.Receipt{}, f.err
 	}
 	m, err := capsule.ReadUnverifiedManifest(container)
 	if err != nil {
-		return backup.Receipt{}, err
+		return recoveryclient.Receipt{}, err
 	}
 	sum := sha256.Sum256(container)
-	return backup.Receipt{CapsuleID: m.CapsuleID, Digest: hex.EncodeToString(sum[:]), SizeBytes: int64(len(container)), DepositedAt: time.Now().UTC()}, nil
+	return recoveryclient.Receipt{CapsuleID: m.CapsuleID, Digest: hex.EncodeToString(sum[:]), SizeBytes: int64(len(container)), DepositedAt: time.Now().UTC()}, nil
 }
 
 func adminPost(t *testing.T, srv *api.Server, session *http.Cookie, path string) *httptest.ResponseRecorder {
@@ -757,6 +752,20 @@ func adminPost(t *testing.T, srv *api.Server, session *http.Cookie, path string)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w
+}
+
+func backupSettings(ctx context.Context, st store.Store) recoveryclient.Settings {
+	return backup.Settings(ctx, st.Settings())
+}
+
+// storePairing seals a KyRecovery pairing the way the handler does.
+func storePairing(t *testing.T, cfg *config.Config, st store.Store, url, token string) error {
+	t.Helper()
+	sealer, err := backup.NewSealer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return recoveryclient.StorePairing(backup.Settings(context.Background(), st.Settings()), sealer, url, token)
 }
 
 // setupSQLiteServer is setupTestServer pinned to SQLite: deposits snapshot the database, and
@@ -787,10 +796,10 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+	if err := recoveryclient.StoreRecoveryKey(cfg.Database.DataDir, backup.Settings(ctx, st.Settings()), recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := storePairing(t, cfg, st, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	fake := &fakeDepositor{}
@@ -801,14 +810,15 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("deposit: got %d: %s", w.Code, w.Body.String())
 	}
-	var rcpt backup.Receipt
-	if err := json.Unmarshal(w.Body.Bytes(), &rcpt); err != nil {
-		t.Fatal(err)
+	var res recoveryclient.Result
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil || res.Receipt == nil {
+		t.Fatalf("decode result: %v %+v", err, res)
 	}
+	rcpt := *res.Receipt
 	if _, _, err := capsule.Open(fake.got, priv, t.TempDir()); err != nil {
 		t.Fatalf("what the store received does not open with the suite key: %v", err)
 	}
-	last, ok, err := backup.LastDeposit(ctx, st.Settings())
+	last, ok, err := recoveryclient.LastDeposit(backup.Settings(ctx, st.Settings()))
 	if err != nil || !ok || last.CapsuleID != rcpt.CapsuleID {
 		t.Errorf("last deposit: %+v %v %v, want %s", last, ok, err, rcpt.CapsuleID)
 	}
@@ -818,27 +828,27 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	}
 	var audited bool
 	for _, rec := range records {
-		if rec.Action == "backup.deposited" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" {
+		if rec.Action == "admin.backup_run" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" && strings.Contains(rec.Details, "outcome=success") {
 			audited = true
 		}
 	}
 	if !audited {
-		t.Error("no backup.deposited audit record for the acting admin")
+		t.Error("no successful admin.backup_run audit record for the acting admin")
 	}
 
 	// A refusal by the store is reported, audited with a bounded message, and leaves the
 	// receipt untouched.
-	fake.err = fmt.Errorf("%w: deposit rejected (502): %s", backup.ErrRemote, strings.Repeat("<html>", 20000)+"\x00\x1b")
+	fake.err = fmt.Errorf("%w: deposit rejected (502): %s", recoveryclient.ErrRemote, strings.Repeat("<html>", 20000)+"\x00\x1b")
 	if w := adminPost(t, srv, session, "/api/backup/deposit"); w.Code != http.StatusBadGateway {
 		t.Fatalf("refused deposit: got %d, want 502: %s", w.Code, w.Body.String())
 	}
 	// A failure this side of the wire is not a refusal by the store, and not a seal failure
 	// either: a pinned URL the client refuses is the operator's problem to see plainly.
 	fake.err = nil
-	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := storePairing(t, cfg, st, "http://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
-	api.SetRecoveryClientForTest(srv, backup.NewKyRecoveryClient())
+	api.SetRecoveryClientForTest(srv, recoveryclient.NewClient(recoveryclient.Options{}))
 	w = adminPost(t, srv, session, "/api/backup/deposit")
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("local failure: got %d, want 500: %s", w.Code, w.Body.String())
@@ -846,18 +856,18 @@ func TestDepositSealsToThePinnedKeyAndAudits(t *testing.T) {
 	if strings.Contains(strings.ToLower(w.Body.String()), "seal") {
 		t.Errorf("a refused recovery URL was reported as a seal failure: %s", w.Body.String())
 	}
-	if again, _, _ := backup.LastDeposit(ctx, st.Settings()); again.CapsuleID != rcpt.CapsuleID {
+	if again, _, _ := recoveryclient.LastDeposit(backup.Settings(ctx, st.Settings())); again.CapsuleID != rcpt.CapsuleID {
 		t.Error("a refused deposit replaced the last receipt")
 	}
 	records, _, _ = st.Audit().ListAuditRecords(ctx, 0, 50)
 	var failed *store.AuditRecord
 	for _, rec := range records {
-		if rec.Action == "backup.deposit_failed" {
+		if rec.Action == "admin.backup_run" && strings.Contains(rec.Details, "outcome=failure") {
 			failed = rec
 		}
 	}
 	if failed == nil {
-		t.Fatal("no backup.deposit_failed record")
+		t.Fatal("no failed admin.backup_run record")
 	}
 	if len(failed.Details) > 300 || strings.ContainsAny(failed.Details, "\x00\x1b") {
 		t.Errorf("audit details are %d bytes with control characters: %.60q", len(failed.Details), failed.Details)
@@ -872,7 +882,7 @@ type cancellingDepositor struct {
 	err    error
 }
 
-func (c *cancellingDepositor) Deposit(ctx context.Context, url, token string, container []byte) (backup.Receipt, error) {
+func (c *cancellingDepositor) Deposit(ctx context.Context, url, token string, container []byte) (recoveryclient.Receipt, error) {
 	c.cancel()
 	c.err = ctx.Err()
 	return c.fakeDepositor.Deposit(ctx, url, token, container)
@@ -885,10 +895,10 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	srv, st, cfg := setupSQLiteServer(t)
 	ctx := context.Background()
 	priv, _ := recoverykey.Generate()
-	if err := backup.StoreRecoveryKey(ctx, cfg.Database.DataDir, st.Settings(), backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+	if err := recoveryclient.StoreRecoveryKey(cfg.Database.DataDir, backup.Settings(ctx, st.Settings()), recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := backup.StorePairing(ctx, st.Settings(), cfg.Security.EncryptionKey, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
+	if err := storePairing(t, cfg, st, "https://recovery.busnes.app", "kyrec_live_t"); err != nil {
 		t.Fatal(err)
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
@@ -906,7 +916,7 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	if fake.err != nil {
 		t.Fatalf("the upload context was cancelled with the request: %v", fake.err)
 	}
-	rcpt, ok, _ := backup.LastDeposit(ctx, st.Settings())
+	rcpt, ok, _ := recoveryclient.LastDeposit(backup.Settings(ctx, st.Settings()))
 	if !ok {
 		t.Fatal("no receipt recorded after the request went away")
 	}
@@ -917,11 +927,11 @@ func TestDepositOutlivesTheRequest(t *testing.T) {
 	}
 	var audited bool
 	for _, rec := range records {
-		if rec.Action == "backup.deposited" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" {
+		if rec.Action == "admin.backup_run" && rec.Resource == rcpt.CapsuleID && rec.UserID == "usr_alice" && strings.Contains(rec.Details, "outcome=success") {
 			audited = true
 		}
 	}
 	if !audited {
-		t.Error("no backup.deposited audit record for the acting admin after the request went away")
+		t.Error("no successful admin.backup_run audit record for the acting admin after the request went away")
 	}
 }
