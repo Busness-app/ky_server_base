@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,5 +106,27 @@ func TestDepositIntervalFromEnv(t *testing.T) {
 		if tc.ok && cfg.Backup.DepositInterval != tc.want {
 			t.Errorf("%q: got %v, want %v", tc.in, cfg.Backup.DepositInterval, tc.want)
 		}
+	}
+}
+
+func TestBackupConfigFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_BACKUP_DIR", "/tmp/x")
+	t.Setenv("KY_BACKUP_KEEP", "3")
+	t.Setenv("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", "true")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Backup.Dir != "/tmp/x" || cfg.Backup.Keep != 3 || !cfg.Backup.AllowPrivateRecovery {
+		t.Fatalf("%+v", cfg.Backup)
+	}
+}
+
+func TestBackupKeepBelowOneIsRefused(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_BACKUP_KEEP", "0")
+	if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "KY_BACKUP_KEEP") {
+		t.Fatalf("want KY_BACKUP_KEEP error, got %v", err)
 	}
 }

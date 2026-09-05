@@ -280,3 +280,17 @@ func TestSpendTOTPCounterRefusesReplay(t *testing.T) {
 		t.Fatalf("stored counter %d, want 101", got.TOTPLastCounter)
 	}
 }
+
+func TestDeleteSettingIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+
+	if err := st.Settings().DeleteSetting(ctx, "never"); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Settings().SetSetting(ctx, "k", "v")
+	_ = st.Settings().DeleteSetting(ctx, "k")
+	if _, err := st.Settings().GetSetting(ctx, "k"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}

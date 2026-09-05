@@ -81,11 +81,15 @@ type SCIMConfig struct {
 
 // BackupConfig holds parameters for KyBackup capsules & recovery drills.
 type BackupConfig struct {
-	StorageDir   string `json:"storage_dir"`
-	AutoDrillDay int    `json:"auto_drill_day"` // day of week
+	Dir string `json:"dir"`
+	// Keep is how many capsule generations recoveryclient retains; it refuses values below 1.
+	Keep int `json:"keep"`
 	// DepositInterval is how often a paired instance seals and deposits a capsule to
 	// KyRecovery. Zero disables the schedule; deposits then happen only on request.
 	DepositInterval time.Duration `json:"deposit_interval"`
+	// AllowPrivateRecovery admits private and CGNAT KyRecovery destinations (HTTPS still
+	// required). Off by default: KyRecovery destinations must be public.
+	AllowPrivateRecovery bool `json:"allow_private_recovery"`
 }
 
 // CaptchaConfig holds anti-abuse settings (PoW default, Turnstile, Friendly).
@@ -148,6 +152,11 @@ func LoadFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", depositInterval, MinDepositInterval)
 	}
 
+	backupKeep := getEnvInt("KY_BACKUP_KEEP", 7)
+	if backupKeep < 1 {
+		return nil, fmt.Errorf("KY_BACKUP_KEEP: must be at least 1, got %d", backupKeep)
+	}
+
 	trustedProxies, err := ParseTrustedProxies(getEnv("KY_TRUSTED_PROXIES", ""))
 	if err != nil {
 		return nil, fmt.Errorf("KY_TRUSTED_PROXIES: %w", err)
@@ -197,9 +206,10 @@ func LoadFromEnv() (*Config, error) {
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
 		},
 		Backup: BackupConfig{
-			StorageDir:      getEnv("KY_BACKUP_DIR", "./backups"),
-			AutoDrillDay:    getEnvInt("KY_BACKUP_DRILL_DAY", 0), // Sunday
-			DepositInterval: depositInterval,
+			Dir:                  getEnv("KY_BACKUP_DIR", "./backups"),
+			Keep:                 backupKeep,
+			DepositInterval:      depositInterval,
+			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),
 		},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),

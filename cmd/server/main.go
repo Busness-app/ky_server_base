@@ -61,6 +61,9 @@ func runServer() {
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
+	if cfg.Backup.AllowPrivateRecovery {
+		log.Printf("[BACKUP] KY_BACKUP_ALLOW_PRIVATE_RECOVERY is on: private and CGNAT KyRecovery destinations admitted (HTTPS still required)")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
