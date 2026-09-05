@@ -29,6 +29,13 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   `PRAGMA integrity_check`, and every `expected_env` name is set.
 - `DrillRoot` is under the data directory, never the system temp dir, because the opened
   payload is the whole instance in the clear.
+- `Members` names what `Collect` would seal now, for the status route and the screen; keep
+  the two in step.
+- Pairing, the write-once key pin, `Run` (one seal, every destination), the schedule, local
+  copies and their pruning, drill mechanics, restore and the decrypt guard are the lib's;
+  their contracts are in the `recoveryclient` README. `client_test.go` pins only what this
+  package's wiring buys: `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` admits RFC1918 and CGNAT and
+  nothing else.
 
 ## Verification
 - `go test -v ./internal/backup/...`

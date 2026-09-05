@@ -12,7 +12,7 @@ Owns user interface components, service worker caching, PWA installation manifes
 - Authenticated state-changing requests use `secureFetch` so the `ky_csrf` cookie is mirrored into `X-CSRF-Token`.
 
 ## Verification
-- `cd web && npm run build`
+- `cd web && npm test && npm run build` (vitest with jsdom; `src/pages/Backup.test.tsx` renders the recovery screen against a stubbed status route). Commit `web/dist` after a build; CI diffs it.
 
 ## Child DOX Index
 None.
