@@ -22,12 +22,13 @@ FROM alpine:3.24
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=backend-builder /app/ky_server_base /app/ky_server_base
+# /app/backups is the optional mount for sealed local capsules; KY_BACKUP_DIR is set by the
+# operator (compose does), so an image run bare keeps no local copies.
 RUN mkdir -p /app/data /app/backups
 
 ENV KY_PORT=8080
 ENV KY_HOST=0.0.0.0
 ENV KY_DATA_DIR=/app/data
-ENV KY_BACKUP_DIR=/app/backups
 
 EXPOSE 8080
 VOLUME ["/app/data", "/app/backups"]

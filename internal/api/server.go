@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky_server_base/internal/auth"
-	"github.com/Busness-app/ky_server_base/internal/backup"
 	"github.com/Busness-app/ky_server_base/internal/config"
 	"github.com/Busness-app/ky_server_base/internal/devices"
 	"github.com/Busness-app/ky_server_base/internal/scim"
@@ -22,8 +22,8 @@ import (
 // recoveryClient is the KyRecovery client as the handlers use it, narrowed so tests can stand
 // in a fake without reaching the network.
 type recoveryClient interface {
-	ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (backup.PairingResult, error)
-	backup.Depositor
+	ClaimPairing(ctx context.Context, serverURL, pairingCode, serviceName, appName string) (recoveryclient.PairingResult, error)
+	recoveryclient.Depositor
 }
 
 type Server struct {
@@ -68,7 +68,7 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 	oidc := sso.NewGenericOIDCClient(cfg.SSO, st)
 	saml := sso.NewSAMLServiceProvider(cfg.SSO.SAMLEntityID, cfg.Server.AppURL+"/saml/acs")
 	scimSrv := scim.NewServer(st, cfg.SCIM, cfg.Server.AppURL)
-	recovery := backup.NewKyRecoveryClient()
+	recovery := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
 
 	s := &Server{
 		config:   cfg,
@@ -155,10 +155,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/devices/pair/poll", s.handlePairPoll)
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
-	s.mux.HandleFunc("/api/backup/drill", s.requireAdmin(s.handleBackupDrill))
-	s.mux.HandleFunc("/api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
-	s.mux.HandleFunc("/api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
-	s.mux.HandleFunc("/api/backup/deposit", s.requireAdmin(s.handleDepositBackup))
+	// Method patterns: only the declared method reaches a handler. Export is a POST so the
+	// CSRF check covers a download that carries the whole instance.
+	s.mux.HandleFunc("POST /api/backup/drill", s.requireAdmin(s.handleBackupDrill))
+	s.mux.HandleFunc("POST /api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
+	s.mux.HandleFunc("POST /api/backup/pair-remote", s.requireAdmin(s.handlePairRemoteRecovery))
+	s.mux.HandleFunc("POST /api/backup/deposit", s.requireAdmin(s.handleRunBackup))
+	s.mux.HandleFunc("DELETE /api/backup/pairing", s.requireAdmin(s.handleUnpair))
+	s.mux.HandleFunc("POST /api/backup/pin-key", s.requireAdmin(s.handlePinKey))
+	s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule))
+	s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
 
 	// Settings & Theme. The read endpoint tiers its own payload by role.
 	s.mux.HandleFunc("/api/settings", s.handleGetSettings)

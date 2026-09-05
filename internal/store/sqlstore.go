@@ -805,6 +805,11 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.upd
 	return err
 }
 
+func (s *settingsStore) DeleteSetting(ctx context.Context, key string) error {
+	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM server_settings WHERE key = ?`), key)
+	return err
+}
+
 func (s *settingsStore) GetAllSettings(ctx context.Context) (map[string]string, error) {
 	rows, err := s.store.db.QueryContext(ctx, "SELECT key, value FROM server_settings")
 	if err != nil {

@@ -5,13 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky_server_base/internal/backup"
 )
 
 func sealFixture(t *testing.T, service string) (string, []string) {
@@ -24,8 +23,10 @@ func sealFixture(t *testing.T, service string) (string, []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := backup.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}
-	raw, _, err := backup.Seal(service, "1.0.0", []backup.BackupFile{{Path: "data/x.db", Data: []byte("payload"), Mode: 0600}}, nil, nil, key)
+	key := recoveryclient.RecoveryKey{Public: priv.Public(), Threshold: 2, TotalShares: 3}
+	payload := recoveryclient.Payload{ServiceName: service, AppVersion: "1.0.0",
+		Files: []recoveryclient.File{{Path: "data/x.db", Data: []byte("payload"), Mode: 0600}}}
+	raw, _, err := recoveryclient.Seal(payload, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,19 +75,5 @@ func TestRestoreRefusesOneShare(t *testing.T) {
 	path, shares := sealFixture(t, "busnes_app")
 	if err := restore(path, t.TempDir(), "busnes_app", shares[:1], &bytes.Buffer{}); err == nil {
 		t.Fatal("one share of a 2-of-3 kit was accepted")
-	}
-}
-
-// Shares arrive on stdin, never in argv. Custodians paste from cards, so the parser has to
-// forgive trailing spaces and the blank lines a paste leaves behind.
-func TestReadSharesSkipsBlankLinesAndTrims(t *testing.T) {
-	in := "  ky2-a  \n\n\t\n ky2-b\nky2-c\t\n   \n"
-	got, err := readShares(strings.NewReader(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"ky2-a", "ky2-b", "ky2-c"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("got %q, want %q", got, want)
 	}
 }

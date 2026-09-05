@@ -130,9 +130,13 @@ func TestPrivilegedEndpointsRequireAdmin(t *testing.T) {
 		path   string
 	}{
 		{"POST", "/api/backup/drill"},
-		{"GET", "/api/backup/export-capsule"},
+		{"POST", "/api/backup/export-capsule"},
 		{"POST", "/api/backup/pair-remote"},
 		{"POST", "/api/backup/deposit"},
+		{"DELETE", "/api/backup/pairing"},
+		{"POST", "/api/backup/pin-key"},
+		{"PUT", "/api/backup/schedule"},
+		{"GET", "/api/backup/status"},
 		{"POST", "/api/settings/theme"},
 	}
 
